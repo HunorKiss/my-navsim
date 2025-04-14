@@ -1,8 +1,5 @@
-TRAIN_TEST_SPLIT=navhard_two_stage
-CHECKPOINT=/path/to/ego_status_mlp.ckpt
-CACHE_PATH=YOUR_PATH_TO_METRIC_CACHE
-SYNTHETIC_SENSOR_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/sensor_blobs
-SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/synthetic_scene_pickles
+TRAIN_TEST_SPLIT=navtest
+CHECKPOINT=/root/workdir/NAVSIM/exp/training_ego_mlp_agent/2025.03.25.20.52.31/lightning_logs/version_0/checkpoints/ep49.ckpt
 
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_pdm_score.py \
 train_test_split=$TRAIN_TEST_SPLIT \

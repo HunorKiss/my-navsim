@@ -14,6 +14,8 @@ from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
 from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
 
+from pytorch_lightning.strategies import DDPStrategy
+
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = "config/training"
@@ -121,6 +123,10 @@ def main(cfg: DictConfig) -> None:
         logger.info("Building SceneLoader")
         train_data, val_data = build_datasets(cfg, agent)
 
+
+    cfg.dataloader.params["prefetch_factor"] = None
+    cfg.dataloader.params.num_workers = 0
+
     logger.info("Building Datasets")
     train_dataloader = DataLoader(train_data, **cfg.dataloader.params, shuffle=True)
     logger.info("Num training samples: %d", len(train_data))
@@ -128,7 +134,10 @@ def main(cfg: DictConfig) -> None:
     logger.info("Num validation samples: %d", len(val_data))
 
     logger.info("Building Trainer")
-    trainer = pl.Trainer(**cfg.trainer.params, callbacks=agent.get_training_callbacks())
+    trainer = pl.Trainer(
+        **cfg.trainer.params,
+        #find_unused_parameters=True,
+        callbacks=agent.get_training_callbacks())
 
     logger.info("Starting Training")
     trainer.fit(

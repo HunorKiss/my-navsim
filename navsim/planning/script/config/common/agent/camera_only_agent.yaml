@@ -1,0 +1,10 @@
+_target_: navsim.agents.camera_only.camera_only_agent.CameraOnlyAgent
+_convert_: 'all'
+
+trajectory_sampling:
+  _target_: nuplan.planning.simulation.trajectory.trajectory_sampling.TrajectorySampling
+  _convert_: 'all'
+  time_horizon: 4
+  interval_length: 0.5
+lr: 1e-4
+checkpoint_path: null
