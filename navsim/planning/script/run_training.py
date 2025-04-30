@@ -15,6 +15,8 @@ from navsim.planning.training.agent_lightning_module import AgentLightningModule
 from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
 
 from pytorch_lightning.strategies import DDPStrategy
+from pytorch_lightning.loggers import WandbLogger
+import wandb
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +135,20 @@ def main(cfg: DictConfig) -> None:
     val_dataloader = DataLoader(val_data, **cfg.dataloader.params, shuffle=False)
     logger.info("Num validation samples: %d", len(val_data))
 
+    wandb.login(key="695992be251588b41a9ea5426d46af287b296e65")
+    logger.info("Initializing WandB Logger")
+    wandb_logger = WandbLogger(
+     project="camera_only",
+     name=cfg.experiment_name,
+     save_dir=cfg.output_dir
+    )
+
     logger.info("Building Trainer")
     trainer = pl.Trainer(
         **cfg.trainer.params,
-        #find_unused_parameters=True,
-        callbacks=agent.get_training_callbacks())
+        logger=wandb_logger,
+        callbacks=agent.get_training_callbacks()
+    )
 
     logger.info("Starting Training")
     trainer.fit(

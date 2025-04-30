@@ -1,12 +1,11 @@
-TEAM_NAME="KHTeam"
-AUTHORS="Kiss_Hunor"
+TEAM_NAME="ContiBME"
+AUTHORS="Hunor Kiss"
 EMAIL="kisshunor@edu.bme.hu"
-INSTITUTION="Budapest_University_of_Technology_and_Economics"
+INSTITUTION="Budapest University of Technology and Economics"
 COUNTRY="Hungary"
 
-TRAIN_TEST_SPLIT=navtest
-CHECKPOINT=/root/workdir/NAVSIM/exp/training_camera_only_agent/2025.04.01.16.17.10/lightning_logs/version_0/checkpoints/epoch13.ckpt
-
+TRAIN_TEST_SPLIT=warmup_two_stage
+CHECKPOINT=/root/workdir/NAVSIM/exp/training_camera_only_agent/2025.04.27.10.16.13/camera_only/mir25tuj/checkpoints/epoch12.ckpt
 
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_create_submission_pickle_challenge.py \
 train_test_split=$TRAIN_TEST_SPLIT \

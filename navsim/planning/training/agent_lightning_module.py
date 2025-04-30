@@ -51,3 +51,7 @@ class AgentLightningModule(pl.LightningModule):
     def configure_optimizers(self):
         """Inherited, see superclass."""
         return self.agent.get_optimizers()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+     lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+     self.log("train/lr_step", lr, on_step=True, on_epoch=False, prog_bar=False)
