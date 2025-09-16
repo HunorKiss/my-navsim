@@ -45,6 +45,8 @@ def run_test_evaluation(
             """
         )
     logger.info("Building Agent Input Loader")
+    data_path = Path('/dataset/private_test_hard_navsim_log/private_test_hard')
+    original_sensor_path = Path('/dataset/private_test_hard_navsim_sensor/private_test_hard')
     input_loader = SceneLoader(
         data_path=data_path,
         scene_filter=scene_filter,

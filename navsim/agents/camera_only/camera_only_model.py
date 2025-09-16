@@ -1,14 +1,15 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torchvision.transforms as T
 from typing import Dict
-from transformers import AutoImageProcessor, SwinModel
+from transformers import AutoFeatureExtractor, AutoModel, AutoImageProcessor, SwinModel
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from navsim.common.enums import StateSE2Index
 from navsim.agents.camera_only.cross_attention import CrossAttention
 
 class CameraOnlyModel(nn.Module):
-    def __init__(self, trajectory_sampling: TrajectorySampling, vit_model="microsoft/swin-small-patch4-window7-224", hidden_dim=128, ego_mlp_output_dim=32, num_attention_heads=4):
+    def __init__(self, trajectory_sampling: TrajectorySampling, hidden_dim=128, ego_mlp_output_dim=384, num_attention_heads=4):
         """
         Initializes the camera-only model with ViT backbone and Transformer encoder.
 
@@ -16,29 +17,28 @@ class CameraOnlyModel(nn.Module):
         super().__init__()
 
         # 1. Vision Transformer (ViT) Backbone
+        # For Google ViT model, use AutoFeatureExtractor and AutoModel from transformers library
+        # Replace with DINO
+        self.image_processor = AutoImageProcessor.from_pretrained("facebook/dino-vits8")
+        self.vit = AutoModel.from_pretrained("facebook/dino-vits8")
+        vit_output_dim = self.vit.config.hidden_size  # should be 384 for dino-vits8
+
+        '''
+        self.feature_extractor = AutoFeatureExtractor.from_pretrained(vit_model) # preprocessing pipeline for the vit model
+        self.vit = AutoModel.from_pretrained(vit_model)
+        vit_output_dim = 768
+        '''
+
+        '''
+        # For Swin Transformer model, use AutoImageProcessor and SwinModel from transformers library
         self.feature_extractor = AutoImageProcessor.from_pretrained(vit_model) # preprocessing pipeline for the vit model
         self.vit = SwinModel.from_pretrained(vit_model)
-        vit_output_dim = 768    # Swin produces a 1024D feature vector
-
+        vit_output_dim = 1024    # Swin produces a 768D feature vector, google produces a 1024D feature vector
+        '''
         
-        # Feature Fusion (Concatenation + MLP)
-        fusion_dim = vit_output_dim + ego_mlp_output_dim  # Dimension after concatenation
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(fusion_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, vit_output_dim), # Project back to ViT dimension (optional)
-        )
-
-        '''''
-        # Feature Fusion (Cross-Attention + MLP)
-        self.cross_attention = CrossAttention(query_dim=vit_output_dim, key_value_dim=ego_mlp_output_dim, num_heads=num_attention_heads)
-        # self.fusion_norm = nn.LayerNorm(vit_output_dim)
-        self.fusion_ffn = nn.Sequential(
-            nn.Linear(vit_output_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, vit_output_dim),
-        )
-        '''''
+        # Feature Fusion
+        self._initialize_concatenation_merge_fusion(vit_output_dim, ego_mlp_output_dim, hidden_dim)
+        # self._initialize_cross_attention_fusion(vit_output_dim, ego_mlp_output_dim, hidden_dim, num_attention_heads)
 
         # 2. Ego-Status Feature Extractor
         self.ego_mlp = nn.Sequential(
@@ -62,6 +62,63 @@ class CameraOnlyModel(nn.Module):
             d_model=vit_output_dim
         )
 
+    def _initialize_concatenation_merge_fusion(self, vit_output_dim, ego_mlp_output_dim, hidden_dim):
+        """
+        Initializes the feature fusion mechanism using concatenation and MLP.
+        """
+        fusion_dim = vit_output_dim + ego_mlp_output_dim  # Dimension after concatenation
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(fusion_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, vit_output_dim),  # Project back to ViT dimension (optional)
+        )
+
+    def _initialize_cross_attention_fusion(self, vit_output_dim, ego_mlp_output_dim, hidden_dim, num_attention_heads):
+        """
+        Initializes the cross-attention mechanism for fusing visual and ego-state features.
+        """
+        self.cross_attention = CrossAttention(
+            query_dim=vit_output_dim,
+            key_dim=ego_mlp_output_dim,
+            num_heads=num_attention_heads
+        )
+        self.fusion_ffn = nn.Sequential(
+            nn.Linear(vit_output_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, vit_output_dim)
+        )
+
+    def _simple_addition_fusion(self, vit_embedding, status_embedding):
+        """
+        Feature fusion mechanism using simple addition.
+        """
+        fused_feature = vit_embedding + status_embedding
+        return fused_feature
+
+    def _concatenate_and_fuse_features(self, vit_embedding, status_embedding):
+        '''
+        Concatenate and fuse visual and ego-state features using MLP.
+        '''
+        fused_feature = torch.cat((vit_embedding, status_embedding), dim=1) # Concatenate along feature dimension (dim=1)
+        fused_feature = self.fusion_mlp(fused_feature)  # (B, 1024)
+
+        return fused_feature
+
+    def _compute_cross_attention_fusion(self, vit_embedding, status_embedding):
+        '''
+        Compute cross-attention between visual and ego-state features.
+        '''
+        # Add a sequence dimension of 1 to embeddings for attention
+        status_embedding_seq = status_embedding.unsqueeze(1) # (B, 1, hidden_dim)
+        vit_embedding_seq = vit_embedding.unsqueeze(1)     # (B, 1, vit_output_dim)
+
+        # Cross-Attention: Visual attends to Ego-State (or vice-versa)
+        attended_visual = self.cross_attention(query=vit_embedding_seq, key=status_embedding_seq, value=status_embedding_seq)
+        fused_feature = vit_embedding + attended_visual.squeeze(1) # Residual connection but no normalization
+        fused_feature = self.fusion_ffn(fused_feature)
+
+        return fused_feature
+
     def forward(self, features):
         """
         Forward pass through the model.
@@ -73,31 +130,25 @@ class CameraOnlyModel(nn.Module):
         status_input: torch.Tensor = features["status_feature"]  # (B, 8)
 
         # 1. Process Camera Features through ViT
+        '''
         inputs = self.feature_extractor(camera_input, return_tensors="pt")["pixel_values"].to(camera_input.device)
         vit_outputs = self.vit(inputs)
-        print(f"Shape of vit_outputs.last_hidden_state: {vit_outputs.last_hidden_state.shape}")
-
         vit_embedding = vit_outputs.last_hidden_state[:, 0, :]  # Extract CLS token embedding (B, 1024) 1: a 0 helyett
+        '''
+        
+        resize_transform = T.Resize((224, 224))
+        camera_input_resized = resize_transform(camera_input)
+        vit_embedding = self._extract_vit_embedding(camera_input_resized)
 
         # 2. Process Ego-Status Features
         status_embedding = self.ego_mlp(status_input)  # (B, 1024)
         
-        fused_feature = torch.cat((vit_embedding, status_embedding), dim=1) # Concatenate along feature dimension (dim=1)
-        fused_feature = self.fusion_mlp(fused_feature)
-        
-        '''''
-        # Add a sequence dimension of 1 to embeddings for attention
-        status_embedding_seq = status_embedding.unsqueeze(1) # (B, 1, hidden_dim)
-        vit_embedding_seq = vit_embedding.unsqueeze(1)     # (B, 1, vit_output_dim)
-
-        # Cross-Attention: Visual attends to Ego-State (or vice-versa)
-        attended_visual = self.cross_attention(query=vit_embedding_seq, key=status_embedding_seq, value=status_embedding_seq)
-        fused_feature = vit_embedding + attended_visual.squeeze(1) # Residual connection but no normalization
-        fused_feature = self.fusion_ffn(fused_feature)
-        '''''
+        fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding)
+        # fused_feature = self._concatenate_and_fuse_features(vit_embedding, status_embedding)
+        # fused_feature = self. _compute_cross_attention_fusion(vit_embedding, status_embedding)
 
         # If we don’t add the sequence dimension, the tensor shape is (B, 1024) instead of (B, 1, 1024), which will cause an error when passed into the Transformer
-        transformed_feature = self.transformer(fused_feature)  # (B, 1, 1024)
+        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1)  # (B, vit_output_dim)
 
         # 5. Trajectory Prediction
         trajectory = self._trajectory_head(transformed_feature)
@@ -105,6 +156,16 @@ class CameraOnlyModel(nn.Module):
         return {"trajectory": trajectory}  # (B, num_poses, 3)
 
         # transzformerek + pytorch doku
+
+    def _extract_vit_embedding(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Extract CLS token embedding from ViT.
+        :param image_tensor: (B, C, H, W)
+        :return: (B, vit_output_dim)
+        """
+        inputs = {"pixel_values": image_tensor}
+        vit_outputs = self.vit(**inputs)
+        return vit_outputs.last_hidden_state[:, 0, :]  # CLS token
 
 class TrajectoryHead(nn.Module):
     """Trajectory prediction head."""

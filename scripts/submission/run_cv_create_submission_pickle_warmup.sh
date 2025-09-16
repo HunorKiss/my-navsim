@@ -1,17 +1,19 @@
-TEAM_NAME="MUST_SET"
-AUTHORS="MUST_SET"
-EMAIL="MUST_SET"
-INSTITUTION="MUST_SET"
-COUNTRY="MUST_SET"
+TEAM_NAME="ContiBME_KH"
+AUTHORS="Hunor_Kiss"
+EMAIL="kisshunor@edu.bme.hu"
+INSTITUTION="Budapest_University_of_Technology_and_Economics"
+COUNTRY="Hungary"
 
 TRAIN_TEST_SPLIT=warmup_two_stage
 SYNTHETIC_SENSOR_PATH=$OPENSCENE_DATA_ROOT/warmup_two_stage/sensor_blobs
 SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/warmup_two_stage/synthetic_scene_pickles
+CHECKPOINT=/root/workdir/NAVSIM/exp/coa_dinovits8_addition/2025.05.06.22.11.08/camera_only/799a9cch/checkpoints/epoch35.ckpt
 
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_create_submission_pickle.py \
 train_test_split=$TRAIN_TEST_SPLIT \
-agent=constant_velocity_agent \
-experiment_name=submission_cv_agent \
+agent=camera_only_agent \
+experiment_name=coa_dinovits8_addition_submission_warmup \
+agent.checkpoint_path=$CHECKPOINT \
 team_name=$TEAM_NAME \
 authors=$AUTHORS \
 email=$EMAIL \
