@@ -137,7 +137,7 @@ class CameraOnlyModel(nn.Module):
         '''
         
         resize_transform = T.Resize((224, 224))
-        camera_input_resized = resize_transform(camera_input)
+        camera_input_resized = resize_transform(camera_input, camera_input)
 
         from torchvision.transforms.functional import to_pil_image
         pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
@@ -146,7 +146,7 @@ class CameraOnlyModel(nn.Module):
         # 2. Process Ego-Status Features
         status_embedding = self.ego_mlp(status_input)  # (B, 1024)
         
-        fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding, camera_input)
+        fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding)
         # fused_feature = self._concatenate_and_fuse_features(vit_embedding, status_embedding)
         # fused_feature = self. _compute_cross_attention_fusion(vit_embedding, status_embedding)
 
