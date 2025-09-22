@@ -14,4 +14,5 @@ def camera_only_loss( targets: Dict[str, torch.Tensor], predictions: Dict[str, t
 
     trajectory_loss = F.l1_loss(predictions["trajectory"], targets["trajectory"])
     loss = trajectory_loss
+    
     return loss

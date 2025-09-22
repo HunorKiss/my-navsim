@@ -3,6 +3,7 @@ from typing import Any, List, Dict, Optional, Union
 import cv2
 
 import torch
+from navsim.agents.camera_only.camera_only_features import CameraOnlyFeatureBuilder, CameraOnlyTargetBuilder
 from torchvision import transforms
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -91,10 +92,11 @@ class CameraOnlyAgent(AbstractAgent):
         predictions: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
         """Inherited, see superclass."""
-        return camera_only_loss(predictions, targets)
+        return camera_only_loss(targets, predictions)
 
     def get_optimizers(self) -> Union[Optimizer, Dict[str, Union[Optimizer, LRScheduler]]]:
         """Inherited, see superclass."""
+        """
         optimizer = torch.optim.Adam(
             list(self._camera_only_model.ego_mlp.parameters()) +
             list(self._camera_only_model.vit.parameters()) +
@@ -103,76 +105,7 @@ class CameraOnlyAgent(AbstractAgent):
             list(self._camera_only_model._trajectory_head.parameters()),
             lr=self._lr
         )
+        """
+        optimizer = torch.optim.Adam(self._camera_only_model.parameters(), lr=self._lr)
         scheduler = StepLR(optimizer, step_size=self._lr_decay_step, gamma=self._lr_decay_gamma)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
-
-class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
-    """Input feature builder of CameraOnly."""
-
-    def __init__(self):
-        """Initializes the feature builder."""
-        return
-
-    def get_unique_name(self) -> str:
-        """Inherited, see superclass."""
-        return "camera_only_feature"
-
-    def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
-        """Inherited, see superclass."""
-
-        features = {}
-        features["camera_feature"] = self._get_camera_feature(agent_input)
-        features["status_feature"] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[-1].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[-1].ego_pose, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[-1].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[-1].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-
-        return features
-
-    def _get_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-
-        print(agent_input.cameras)
-
-        cameras = agent_input.cameras[-1]
-
-        # Crop to ensure 4:1 aspect ratio
-        l0 = cameras.cam_l0.image[28:-28, 416:-416]
-        f0 = cameras.cam_f0.image[28:-28]
-        r0 = cameras.cam_r0.image[28:-28, 416:-416]
-
-        # stitch l0, f0, r0 images
-        stitched_image = np.concatenate([l0, f0, r0], axis=1)
-        resized_image = cv2.resize(stitched_image, (1024, 256))
-        tensor_image = transforms.ToTensor()(resized_image)
-
-        return tensor_image
-
-
-class CameraOnlyTargetBuilder(AbstractTargetBuilder):
-    """Output target builder for CameraOnly."""
-
-    def __init__(self, trajectory_sampling: TrajectorySampling):
-        """
-        Initializes the target builder.
-        :param trajectory_sampling: trajectory sampling specification.
-        """
-
-        self._trajectory_sampling = trajectory_sampling
-
-    def get_unique_name(self) -> str:
-        """Inherited, see superclass."""
-        return "camera_only_target"
-
-    def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
-        """Inherited, see superclass."""
-        future_trajectory = scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses).poses
-        return {"trajectory": torch.tensor(future_trajectory)}

@@ -138,12 +138,15 @@ class CameraOnlyModel(nn.Module):
         
         resize_transform = T.Resize((224, 224))
         camera_input_resized = resize_transform(camera_input)
-        vit_embedding = self._extract_vit_embedding(camera_input_resized)
+
+        from torchvision.transforms.functional import to_pil_image
+        pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
+        vit_embedding = self._extract_vit_embedding(pil_images)
 
         # 2. Process Ego-Status Features
         status_embedding = self.ego_mlp(status_input)  # (B, 1024)
         
-        fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding)
+        fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding, camera_input)
         # fused_feature = self._concatenate_and_fuse_features(vit_embedding, status_embedding)
         # fused_feature = self. _compute_cross_attention_fusion(vit_embedding, status_embedding)
 
@@ -157,13 +160,15 @@ class CameraOnlyModel(nn.Module):
 
         # transzformerek + pytorch doku
 
-    def _extract_vit_embedding(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _extract_vit_embedding(self, image_tensor: torch.Tensor, camera_input) -> torch.Tensor:
         """
         Extract CLS token embedding from ViT.
         :param image_tensor: (B, C, H, W)
         :return: (B, vit_output_dim)
         """
-        inputs = {"pixel_values": image_tensor}
+        # inputs = {"pixel_values": image_tensor}
+        inputs = self.image_processor(images=image_tensor, return_tensors="pt")
+        inputs = {k: v.to(camera_input.device) for k, v in inputs.items()}
         vit_outputs = self.vit(**inputs)
         return vit_outputs.last_hidden_state[:, 0, :]  # CLS token
 
