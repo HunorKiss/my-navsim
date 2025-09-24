@@ -7,6 +7,9 @@ from transformers import AutoFeatureExtractor, AutoModel, AutoImageProcessor, Sw
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from navsim.common.enums import StateSE2Index
 from navsim.agents.camera_only.cross_attention import CrossAttention
+from navsim.agents.camera_only.camera_only_features import BoundingBox2DIndex
+from torchvision.transforms.functional import to_pil_image
+
 
 class CameraOnlyModel(nn.Module):
     def __init__(self, trajectory_sampling: TrajectorySampling, hidden_dim=128, ego_mlp_output_dim=384, num_attention_heads=4):
@@ -139,7 +142,6 @@ class CameraOnlyModel(nn.Module):
         resize_transform = T.Resize((224, 224))
         camera_input_resized = resize_transform(camera_input, camera_input)
 
-        from torchvision.transforms.functional import to_pil_image
         pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
         vit_embedding = self._extract_vit_embedding(pil_images)
 
@@ -171,6 +173,48 @@ class CameraOnlyModel(nn.Module):
         inputs = {k: v.to(camera_input.device) for k, v in inputs.items()}
         vit_outputs = self.vit(**inputs)
         return vit_outputs.last_hidden_state[:, 0, :]  # CLS token
+
+class AgentHead(nn.Module):
+    """Bounding box prediction head."""
+
+    def __init__(
+        self,
+        num_agents: int,
+        d_ffn: int,
+        d_model: int,
+    ):
+        """
+        Initializes prediction head.
+        :param num_agents: maximum number of agents to predict
+        :param d_ffn: dimensionality of feed-forward network
+        :param d_model: input dimensionality
+        """
+        super(AgentHead, self).__init__()
+
+        self._num_objects = num_agents
+        self._d_model = d_model
+        self._d_ffn = d_ffn
+
+        self._mlp_states = nn.Sequential(
+            nn.Linear(self._d_model, self._d_ffn),
+            nn.ReLU(),
+            nn.Linear(self._d_ffn, BoundingBox2DIndex.size()),
+        )
+
+        self._mlp_label = nn.Sequential(
+            nn.Linear(self._d_model, 1),
+        )
+
+    def forward(self, agent_queries) -> Dict[str, torch.Tensor]:
+        """Torch module forward pass."""
+
+        agent_states = self._mlp_states(agent_queries)
+        agent_states[..., BoundingBox2DIndex.POINT] = agent_states[..., BoundingBox2DIndex.POINT].tanh() * 32
+        agent_states[..., BoundingBox2DIndex.HEADING] = agent_states[..., BoundingBox2DIndex.HEADING].tanh() * np.pi
+
+        agent_labels = self._mlp_label(agent_queries).squeeze(dim=-1)
+
+        return {"agent_states": agent_states, "agent_labels": agent_labels}
 
 class TrajectoryHead(nn.Module):
     """Trajectory prediction head."""

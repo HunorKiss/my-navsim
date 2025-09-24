@@ -1,13 +1,18 @@
 import numpy as np
 from typing import Dict
 import cv2
+from enum import IntEnum
+from typing import Any, Dict, List, Tuple
+import numpy.typing as npt
 
 import torch
 from torchvision import transforms
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from navsim.common.dataclasses import AgentInput, Annotations, Scene
 from navsim.common.dataclasses import AgentInput, Scene
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
-
+from navsim.common.enums import BoundingBoxIndex
+from navsim.agents.camera_only.camera_only_config import CameraOnlyConfig
 
 class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
     """Input feature builder of CameraOnly."""
@@ -83,3 +88,106 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
         """Inherited, see superclass."""
         future_trajectory = scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses).poses
         return {"trajectory": torch.tensor(future_trajectory)}
+    
+    def _compute_agent_targets(self, annotations: Annotations) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extracts 2D agent bounding boxes in ego coordinates
+        :param annotations: annotation dataclass
+        :return: tuple of bounding box values and labels (binary)
+        """
+
+        max_agents = self._config.num_bounding_boxes
+        agent_states_list: List[npt.NDArray[np.float32]] = []
+
+        def _xy_in_lidar(x: float, y: float, config: CameraOnlyConfig) -> bool:
+            return (config.environment_min_x <= x <= config.environment_max_x) and (config.environment_min_x <= y <= config.environment_max_y)
+
+        for box, name in zip(annotations.boxes, annotations.names):
+            box_x, box_y, box_heading, box_length, box_width = (
+                box[BoundingBoxIndex.X],
+                box[BoundingBoxIndex.Y],
+                box[BoundingBoxIndex.HEADING],
+                box[BoundingBoxIndex.LENGTH],
+                box[BoundingBoxIndex.WIDTH],
+            )
+
+            if name == "vehicle" and _xy_in_lidar(box_x, box_y, self._config):
+                agent_states_list.append(
+                    np.array(
+                        [box_x, box_y, box_heading, box_length, box_width],
+                        dtype=np.float32,
+                    )
+                )
+
+        agents_states_arr = np.array(agent_states_list)
+
+        # filter num_instances nearest
+        agent_states = np.zeros((max_agents, BoundingBox2DIndex.size()), dtype=np.float32)
+        agent_labels = np.zeros(max_agents, dtype=bool)
+
+        if len(agents_states_arr) > 0:
+            distances = np.linalg.norm(agents_states_arr[..., BoundingBox2DIndex.POINT], axis=-1)
+            argsort = np.argsort(distances)[:max_agents]
+
+            # filter detections
+            agents_states_arr = agents_states_arr[argsort]
+            agent_states[: len(agents_states_arr)] = agents_states_arr
+            agent_labels[: len(agents_states_arr)] = True
+
+        return torch.tensor(agent_states), torch.tensor(agent_labels)
+    
+
+class BoundingBox2DIndex(IntEnum):
+    """Intenum for bounding boxes in TransFuser."""
+
+    _X = 0
+    _Y = 1
+    _HEADING = 2
+    _LENGTH = 3
+    _WIDTH = 4
+
+    @classmethod
+    def size(cls):
+        valid_attributes = [
+            attribute
+            for attribute in dir(cls)
+            if attribute.startswith("_") and not attribute.startswith("__") and not callable(getattr(cls, attribute))
+        ]
+        return len(valid_attributes)
+
+    @classmethod
+    @property
+    def X(cls):
+        return cls._X
+
+    @classmethod
+    @property
+    def Y(cls):
+        return cls._Y
+
+    @classmethod
+    @property
+    def HEADING(cls):
+        return cls._HEADING
+
+    @classmethod
+    @property
+    def LENGTH(cls):
+        return cls._LENGTH
+
+    @classmethod
+    @property
+    def WIDTH(cls):
+        return cls._WIDTH
+
+    @classmethod
+    @property
+    def POINT(cls):
+        # assumes X, Y have subsequent indices
+        return slice(cls._X, cls._Y + 1)
+
+    @classmethod
+    @property
+    def STATE_SE2(cls):
+        # assumes X, Y, HEADING have subsequent indices
+        return slice(cls._X, cls._HEADING + 1)
