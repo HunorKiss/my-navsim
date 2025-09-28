@@ -126,10 +126,10 @@ class CameraOnlyModel(nn.Module):
         """
         Forward pass through the model.
 
-        :param features: Dictionary containing "camera_feature" and "status_feature".
+        :param features: Dictionary containing the relevant features for this implementation.
         :return: Predicted trajectory waypoints.
         """
-        camera_input: torch.Tensor = features["camera_feature"]  # (B, C, H, W)
+        camera_input: torch.Tensor = features["front_camera_feature"]  # (B, C, H, W)
         status_input: torch.Tensor = features["status_feature"]  # (B, 8)
 
         # 1. Process Camera Features through ViT

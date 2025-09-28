@@ -29,7 +29,8 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
         """Inherited, see superclass."""
 
         features = {}
-        features["camera_feature"] = self._get_camera_feature(agent_input)
+        features["front_camera_feature"] = self._get_front_camera_feature(agent_input)
+        # features["back_camera_feature"] = self._get_back_camera_feature(agent_input)
         features["status_feature"] = torch.concatenate(
             [
                 torch.tensor(agent_input.ego_statuses[-1].driving_command, dtype=torch.float32),
@@ -41,7 +42,7 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 
         return features
 
-    def _get_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
+    def _get_front_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
         """
         Extract stitched camera from AgentInput
         :param agent_input: input dataclass
@@ -59,6 +60,34 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 
         # stitch l0, f0, r0 images
         stitched_image = np.concatenate([l0, f0, r0], axis=1)
+        resized_image = cv2.resize(stitched_image, (1024, 256))
+
+        # OpenCV gives BGR, convert to RGB
+        # l-----> ez változtatás a TransFuserhez képest
+        resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+
+        tensor_image = transforms.ToTensor()(resized_image)
+
+        return tensor_image
+    
+    def _get_back_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
+        """
+        Extract stitched camera from AgentInput
+        :param agent_input: input dataclass
+        :return: stitched front view image as torch tensor
+        """
+
+        # print(agent_input.cameras)
+
+        cameras = agent_input.cameras[-1]
+
+        # Crop to ensure 4:1 aspect ratio
+        l2 = cameras.cam_l2.image[28:-28, 416:-416]
+        b0 = cameras.cam_b0.image[28:-28]
+        r2 = cameras.cam_r2.image[28:-28, 416:-416]
+
+        # stitch l0, f0, r0 images
+        stitched_image = np.concatenate([r2, b0, l2], axis=1)
         resized_image = cv2.resize(stitched_image, (1024, 256))
 
         # OpenCV gives BGR, convert to RGB
