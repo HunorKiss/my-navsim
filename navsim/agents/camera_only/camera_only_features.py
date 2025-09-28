@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from typing import Dict
 import cv2
@@ -141,7 +142,25 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
         agent_states_list: List[npt.NDArray[np.float32]] = []
 
         def _xy_in_area(x: float, y: float, config: CameraOnlyConfig) -> bool:
-            return (config.environment_min_x <= x <= config.environment_max_x) and (config.environment_min_x <= y <= config.environment_max_y)
+            """
+            Check if a point (x, y) is inside the square area and within the front camera FOV.
+            """
+            # 1. Square area check
+            inside_square = (
+                config.environment_min_x <= x <= config.environment_max_x
+                and config.environment_min_y <= y <= config.environment_max_y
+            )
+
+            if not inside_square:
+                return False
+
+            # 2. Front camera FOV check (140 degrees)
+            fov_rad = math.radians(140)  # 140 degrees in radians
+            angle = math.atan2(y, x)     # angle from ego to agent (0 = straight ahead)
+            if abs(angle) > fov_rad / 2:
+                return False
+
+            return True
 
         for box, name in zip(annotations.boxes, annotations.names):
             box_x, box_y, box_heading, box_length, box_width = (

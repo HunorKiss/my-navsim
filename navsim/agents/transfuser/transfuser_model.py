@@ -122,6 +122,42 @@ class TransfuserModel(nn.Module):
         output.update(agents)
 
         return output
+    
+    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Torch module forward pass."""
+
+        camera_feature: torch.Tensor = features["camera_feature"]
+        if self._config.latent:
+            lidar_feature = None
+        else:
+            lidar_feature: torch.Tensor = features["lidar_feature"]
+        status_feature: torch.Tensor = features["status_feature"]
+
+        batch_size = status_feature.shape[0]
+
+        bev_feature_upscale, bev_feature, _ = self._backbone(camera_feature, lidar_feature)
+
+        bev_feature = self._bev_downscale(bev_feature).flatten(-2, -1)
+        bev_feature = bev_feature.permute(0, 2, 1)
+        status_encoding = self._status_encoding(status_feature)
+
+        keyval = torch.concatenate([bev_feature, status_encoding[:, None]], dim=1)
+        keyval += self._keyval_embedding.weight[None, ...]
+
+        query = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
+        query_out = self._tf_decoder(query, keyval)
+
+        bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
+        trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
+
+        output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
+        trajectory = self._trajectory_head(trajectory_query)
+        output.update(trajectory)
+
+        agents = self._agent_head(agents_query)
+        output.update(agents)
+
+        return output
 
 
 class AgentHead(nn.Module):

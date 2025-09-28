@@ -8,11 +8,12 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 from navsim.common.enums import StateSE2Index
 from navsim.agents.camera_only.cross_attention import CrossAttention
 from navsim.agents.camera_only.camera_only_features import BoundingBox2DIndex
+from navsim.agents.camera_only.camera_only_config import CameraOnlyConfig
 from torchvision.transforms.functional import to_pil_image
 
 
 class CameraOnlyModel(nn.Module):
-    def __init__(self, trajectory_sampling: TrajectorySampling, hidden_dim=128, ego_mlp_output_dim=384, num_attention_heads=4):
+    def __init__(self, trajectory_sampling: TrajectorySampling, config: CameraOnlyConfig, hidden_dim=128, ego_mlp_output_dim=384, num_attention_heads=4):
         """
         Initializes the camera-only model with ViT backbone and Transformer encoder.
 
@@ -63,6 +64,12 @@ class CameraOnlyModel(nn.Module):
             num_poses=trajectory_sampling.num_poses,
             d_ffn=hidden_dim,
             d_model=vit_output_dim
+        )
+
+        self._agent_head = AgentHead(
+            num_agents=config.num_bounding_boxes,
+            d_ffn=config.tf_d_ffn,
+            d_model=config.tf_d_model,
         )
 
     def _initialize_concatenation_merge_fusion(self, vit_output_dim, ego_mlp_output_dim, hidden_dim):
@@ -124,43 +131,93 @@ class CameraOnlyModel(nn.Module):
 
     def forward(self, features):
         """
-        Forward pass through the model.
+        Standard forward pass for trajectory prediction only.
 
-        :param features: Dictionary containing the relevant features for this implementation.
-        :return: Predicted trajectory waypoints.
+        :param features: Dictionary containing input tensors:
+            - "front_camera_feature": torch.Tensor, shape (B, C, H, W)
+              Raw front camera image tensor.
+            - "status_feature": torch.Tensor, shape (B, 11)
+              Ego-status features (e.g., velocity, acceleration, command, pose).
+        :return: Dictionary with:
+            - "trajectory": Predicted waypoints, shape (B, num_poses, 3)
         """
-        camera_input: torch.Tensor = features["front_camera_feature"]  # (B, C, H, W)
-        status_input: torch.Tensor = features["status_feature"]  # (B, 8)
 
-        # 1. Process Camera Features through ViT
-        '''
-        inputs = self.feature_extractor(camera_input, return_tensors="pt")["pixel_values"].to(camera_input.device)
-        vit_outputs = self.vit(inputs)
-        vit_embedding = vit_outputs.last_hidden_state[:, 0, :]  # Extract CLS token embedding (B, 1024) 1: a 0 helyett
-        '''
-        
+        # 1. Extract camera input and ego-status input
+        camera_input: torch.Tensor = features["front_camera_feature"]
+        status_input: torch.Tensor = features["status_feature"]
+
+        # 2. Preprocess camera input for ViT
+        #    Resize to ViT-compatible resolution (224x224), then convert to PIL
         resize_transform = T.Resize((224, 224))
         camera_input_resized = resize_transform(camera_input, camera_input)
-
         pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
-        vit_embedding = self._extract_vit_embedding(pil_images)
 
-        # 2. Process Ego-Status Features
-        status_embedding = self.ego_mlp(status_input)  # (B, 1024)
-        
+        # 3. Extract ViT embeddings (CLS token per image)
+        vit_embedding = self._extract_vit_embedding(pil_images, camera_input)
+
+        # 4. Process ego-status input through MLP
+        status_embedding = self.ego_mlp(status_input)  # shape (B, ego_mlp_output_dim)
+
+        # 5. Fuse vision and ego-status features
+        #    Options: simple addition (default), concatenation+MLP, or cross-attention
         fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding)
         # fused_feature = self._concatenate_and_fuse_features(vit_embedding, status_embedding)
-        # fused_feature = self. _compute_cross_attention_fusion(vit_embedding, status_embedding)
+        # fused_feature = self._compute_cross_attention_fusion(vit_embedding, status_embedding)
 
-        # If we don’t add the sequence dimension, the tensor shape is (B, 1024) instead of (B, 1, 1024), which will cause an error when passed into the Transformer
-        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1)  # (B, vit_output_dim)
+        # 6. Temporal/sequence modeling with Transformer encoder
+        #    Add sequence dim -> (B, 1, d_model), then encode -> squeeze back to (B, d_model)
+        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1)
 
-        # 5. Trajectory Prediction
-        trajectory = self._trajectory_head(transformed_feature)
+        # 7. Trajectory prediction head
+        trajectory = self._trajectory_head(transformed_feature)  # (B, num_poses, 3)
 
-        return {"trajectory": trajectory}  # (B, num_poses, 3)
+        return {"trajectory": trajectory}
+    
+    def forward_2(self, features):
+        """
+        Forward pass that predicts trajectory and agents with spatially-aware attention.
+        """
+        camera_input: torch.Tensor = features["front_camera_feature"]  # (B, C, H, W)
+        status_input: torch.Tensor = features["status_feature"]        # (B, 11)
+        batch_size = camera_input.shape[0]
 
-        # transzformerek + pytorch doku
+        # --- 1. ViT backbone: extract patch embeddings ---
+        resize_transform = T.Resize((224, 224))
+        camera_input_resized = resize_transform(camera_input, camera_input)
+        pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
+        vit_outputs = self.image_processor(images=camera_input_resized, return_tensors="pt").to(camera_input.device)
+        vit_emb = self.vit(**vit_outputs).last_hidden_state  # (B, num_patches+1, d_model)
+        patch_embeddings = vit_emb[:, 1:, :]                 # Remove CLS token, shape: (B, num_patches, d_model)
+
+        # --- 2. Ego-state embedding ---
+        status_embedding = self.ego_mlp(status_input)       # (B, ego_mlp_output_dim)
+        status_embedding = status_embedding.unsqueeze(1)    # (B, 1, d_model)
+
+        # --- 3. Concatenate patches + ego as memory ---
+        memory = torch.cat([patch_embeddings, status_embedding], dim=1)  # (B, num_patches+1, d_model)
+
+        # --- 4. Agent queries ---
+        if not hasattr(self, "agent_queries"):
+            self.agent_queries = nn.Parameter(torch.randn(self._agent_head._num_objects, memory.shape[2]))
+            nn.init.xavier_uniform_(self.agent_queries)
+        queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, num_agents, d_model)
+
+        # --- 5. Multihead attention (agent queries attend to memory) ---
+        attn = nn.MultiheadAttention(embed_dim=memory.shape[2], num_heads=4, batch_first=True)
+        attended_queries, _ = attn(queries, memory, memory)  # (B, num_agents, d_model)
+
+        # --- 6. Trajectory prediction ---
+        cls_token = vit_emb[:, 0, :]  # CLS token for global trajectory
+        trajectory = self._trajectory_head(cls_token)
+
+        # --- 7. Agent prediction ---
+        agent_predictions = self._agent_head(attended_queries)
+
+        return {
+            "trajectory": trajectory,
+            "agent_predictions": agent_predictions
+        }
+
 
     def _extract_vit_embedding(self, image_tensor: torch.Tensor, camera_input) -> torch.Tensor:
         """
