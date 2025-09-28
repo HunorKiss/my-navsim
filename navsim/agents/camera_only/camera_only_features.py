@@ -86,8 +86,20 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
 
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         """Inherited, see superclass."""
-        future_trajectory = scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses).poses
-        return {"trajectory": torch.tensor(future_trajectory)}
+        trajectory = torch.tensor(
+            scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses).poses
+        )
+
+        frame_idx = scene.scene_metadata.num_history_frames - 1
+        annotations = scene.frames[frame_idx].annotations
+
+        agent_states, agent_labels = self._compute_agent_targets(annotations)
+        
+        return {
+            "trajectory": trajectory,
+            "agent_states": agent_states,
+            "agent_labels": agent_labels
+        }
     
     def _compute_agent_targets(self, annotations: Annotations) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -99,7 +111,7 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
         max_agents = self._config.num_bounding_boxes
         agent_states_list: List[npt.NDArray[np.float32]] = []
 
-        def _xy_in_lidar(x: float, y: float, config: CameraOnlyConfig) -> bool:
+        def _xy_in_area(x: float, y: float, config: CameraOnlyConfig) -> bool:
             return (config.environment_min_x <= x <= config.environment_max_x) and (config.environment_min_x <= y <= config.environment_max_y)
 
         for box, name in zip(annotations.boxes, annotations.names):
@@ -111,7 +123,7 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
                 box[BoundingBoxIndex.WIDTH],
             )
 
-            if name == "vehicle" and _xy_in_lidar(box_x, box_y, self._config):
+            if name == "vehicle" and _xy_in_area(box_x, box_y, self._config):
                 agent_states_list.append(
                     np.array(
                         [box_x, box_y, box_heading, box_length, box_width],
