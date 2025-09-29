@@ -1,11 +1,12 @@
 from typing import Dict
 from scipy.optimize import linear_sum_assignment
 from navsim.agents.camera_only.camera_only_config import CameraOnlyConfig
+from navsim.agents.camera_only.camera_only_features import BoundingBox2DIndex
 
 import torch
 import torch.nn.functional as F
 
-def camera_only_loss( targets: Dict[str, torch.Tensor], predictions: Dict[str, torch.Tensor]):
+def camera_only_loss( targets: Dict[str, torch.Tensor], predictions: Dict[str, torch.Tensor], config: CameraOnlyConfig):
     """
     Helper function calculating complete loss of CameraOnly
     :param targets: dictionary of name tensor pairings
