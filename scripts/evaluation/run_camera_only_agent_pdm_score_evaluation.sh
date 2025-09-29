@@ -1,8 +1,8 @@
 TRAIN_TEST_SPLIT=navhard_two_stage
 CHECKPOINT=/root/workdir/NAVSIM/exp/coa_dinovits8_addition/2025.05.06.22.11.08/camera_only/799a9cch/checkpoints/epoch35.ckpt
 CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache
-SYNTHETIC_SENSOR_PATH=$OPENSCENE_DATA_ROOT/private_test_hard_two_stage/sensor_blobs
-SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/private_test_hard_two_stage/openscene_meta_datas
+SYNTHETIC_SENSOR_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/sensor_blobs
+SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/synthetic_scene_pickles
 
 
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_pdm_score.py \

@@ -26,3 +26,6 @@ class CameraOnlyConfig:
     # Transformer
     tf_d_model: int = 256
     tf_d_ffn: int = 1024
+
+    latent: bool = False
+    latent_rad_thresh: float = 4 * np.pi / 9
