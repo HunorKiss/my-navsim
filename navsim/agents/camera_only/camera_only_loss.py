@@ -78,7 +78,7 @@ def _agent_loss(targets: Dict[str, torch.Tensor], predictions: Dict[str, torch.T
 
     return ce_loss, l1_loss
 
-    @torch.no_grad()
+@torch.no_grad()
 def _get_ce_cost(gt_valid: torch.Tensor, pred_logits: torch.Tensor) -> torch.Tensor:
     """
     Function to calculate cross-entropy cost for cost matrix.
