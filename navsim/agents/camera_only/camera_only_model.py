@@ -210,13 +210,14 @@ class CameraOnlyModel(nn.Module):
         cls_token = vit_emb[:, 0, :]  # CLS token for global trajectory
         trajectory = self._trajectory_head(cls_token)
 
-        # --- 7. Agent prediction ---
-        agent_predictions = self._agent_head(attended_queries)
+        output = {"trajectory": trajectory}
 
-        return {
-            "trajectory": trajectory,
-            "agent_predictions": agent_predictions
-        }
+        # --- 7. Agent prediction (only during training) ---
+        if self.training:
+            agent_predictions = self._agent_head(attended_queries)
+            output.update(agent_predictions)
+
+        return output
 
 
     def _extract_vit_embedding(self, image_tensor: torch.Tensor, camera_input) -> torch.Tensor:
