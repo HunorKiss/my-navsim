@@ -138,7 +138,7 @@ def main(cfg: DictConfig) -> None:
     wandb.login(key="695992be251588b41a9ea5426d46af287b296e65")
     logger.info("Initializing WandB Logger")
     wandb_logger = WandbLogger(
-     project="camera_only",
+     project="thesis",
      name=cfg.experiment_name,
      save_dir=cfg.output_dir
     )

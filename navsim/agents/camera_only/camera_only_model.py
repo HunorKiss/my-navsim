@@ -129,7 +129,7 @@ class CameraOnlyModel(nn.Module):
 
         return fused_feature
 
-    def forward(self, features):
+    def forward_base(self, features):
         """
         Standard forward pass for trajectory prediction only.
 
@@ -173,7 +173,7 @@ class CameraOnlyModel(nn.Module):
 
         return {"trajectory": trajectory}
     
-    def forward_2(self, features):
+    def forward(self, features):
         """
         Forward pass that predicts trajectory and agents with spatially-aware attention.
         """

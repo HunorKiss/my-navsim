@@ -16,6 +16,8 @@ from navsim.agents.camera_only.camera_only_loss import camera_only_loss
 from navsim.common.dataclasses import AgentInput, Trajectory, SensorConfig, Scene
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 
+from navsim.agents.camera_only.camera_only_config import CameraOnlyConfig
+
 class CameraOnlyAgent(AbstractAgent):
     """Agent implementing a camera-only model."""
 
@@ -23,6 +25,7 @@ class CameraOnlyAgent(AbstractAgent):
 
     def __init__(
         self,
+        config: CameraOnlyConfig,
         lr: float,
         checkpoint_path: Optional[str] = None,
         trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5),
@@ -36,13 +39,14 @@ class CameraOnlyAgent(AbstractAgent):
         """
         super().__init__(trajectory_sampling)
 
+        self._config = config
         self._lr = lr
         self._lr_decay_step = lr_decay_step
         self._lr_decay_gamma = lr_decay_gamma
         self._checkpoint_path = checkpoint_path
         self._trajectory_sampling = trajectory_sampling
 
-        self._camera_only_model = CameraOnlyModel(self._trajectory_sampling)
+        self._camera_only_model = CameraOnlyModel(self._trajectory_sampling, self._config)
 
     def name(self) -> str:
         """Inherited, see superclass."""
