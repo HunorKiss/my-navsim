@@ -5,10 +5,13 @@ export OPENSCENE_DATA_ROOT=~/thesis/dataset
 export NUPLAN_MAPS_ROOT=~/thesis/dataset/maps
 export PYTHONPATH=$NAVSIM_DEVKIT_ROOT:$PYTHONPATH
 
+export CUDA_LAUNCH_BLOCKING=1
+export HYDRA_FULL_ERROR=1
+
 TRAIN_TEST_SPLIT=navtrain
 
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_training.py \
 agent=camera_only_agent \
-experiment_name=basemodel \
+experiment_name=auxiliary_model_w_agents \
 trainer.params.max_epochs=50 \
-train_test_split=$TRAIN_TEST_SPLIT \
+train_test_split=$TRAIN_TEST_SPLIT

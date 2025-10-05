@@ -19,7 +19,7 @@ class AgentLightningModule(pl.LightningModule):
         self.agent = agent
 
          # --- Log model size once ---
-        num_params = sum(p.numel() for p in self.agent.parameters()) / 1e6  # in millions
+        self._num_params = sum(p.numel() for p in self.agent.parameters()) / 1e6  # in millions
     
     def on_train_start(self):
         """Log model size once training starts (trainer is attached)."""
@@ -82,4 +82,4 @@ class AgentLightningModule(pl.LightningModule):
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
      lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-     self.log("train/lr_step", lr, on_step=True, on_epoch=True, prog_bar=False)
+     self.log("train/lr", lr, on_step=True, on_epoch=True, prog_bar=False)

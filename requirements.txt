@@ -39,10 +39,8 @@ tornado  # Used in nuboard.py
 tqdm  # Used widely
 ujson  # Used in serialiation_callback.py
 
-torch==2.2.0
-torchvision==0.17.0
-pytorch-lightning==2.2.1
-tensorboard==2.16.2
+pytorch-lightning==2.3.0
+tensorboard==2.17.0
 protobuf==4.25.3
 
 notebook

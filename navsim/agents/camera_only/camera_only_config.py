@@ -24,7 +24,7 @@ class CameraOnlyConfig:
     agent_box_weight: float = 1.0
 
     # Transformer
-    tf_d_model: int = 256
+    tf_d_model: int = 384
     tf_d_ffn: int = 1024
 
     latent: bool = False

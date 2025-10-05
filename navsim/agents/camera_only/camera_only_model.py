@@ -53,6 +53,13 @@ class CameraOnlyModel(nn.Module):
             nn.Linear(hidden_dim, ego_mlp_output_dim),
         )
 
+        # 5. Multihead Attention for Agent Queries (New Initialization)
+        self.agent_attn = nn.MultiheadAttention(
+            embed_dim=vit_output_dim,  # Same as memory.shape[2]
+            num_heads=num_attention_heads, # Use the config arg, or set to 4
+            batch_first=True
+        )
+
         # 3. Transformer Encoder
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=vit_output_dim, nhead=8),
@@ -183,9 +190,9 @@ class CameraOnlyModel(nn.Module):
 
         # --- 1. ViT backbone: extract patch embeddings ---
         resize_transform = T.Resize((224, 224))
-        camera_input_resized = resize_transform(camera_input, camera_input)
+        camera_input_resized = resize_transform(camera_input)
         pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
-        vit_outputs = self.image_processor(images=camera_input_resized, return_tensors="pt").to(camera_input.device)
+        vit_outputs = self.image_processor(images=pil_images, return_tensors="pt").to(camera_input.device)
         vit_emb = self.vit(**vit_outputs).last_hidden_state  # (B, num_patches+1, d_model)
         patch_embeddings = vit_emb[:, 1:, :]                 # Remove CLS token, shape: (B, num_patches, d_model)
 
@@ -202,9 +209,12 @@ class CameraOnlyModel(nn.Module):
             nn.init.xavier_uniform_(self.agent_queries)
         queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, num_agents, d_model)
 
+        # === NEW FIX: Explicitly move queries to the device ===
+        queries = queries.to(camera_input.device) 
+        # ======================================================
+
         # --- 5. Multihead attention (agent queries attend to memory) ---
-        attn = nn.MultiheadAttention(embed_dim=memory.shape[2], num_heads=4, batch_first=True)
-        attended_queries, _ = attn(queries, memory, memory)  # (B, num_agents, d_model)
+        attended_queries, _ = self.agent_attn(queries, memory, memory)  # (B, num_agents, d_model)
 
         # --- 6. Trajectory prediction ---
         cls_token = vit_emb[:, 0, :]  # CLS token for global trajectory
@@ -214,8 +224,8 @@ class CameraOnlyModel(nn.Module):
 
         # --- 7. Agent prediction (only during training) ---
         if self.training:
-            agent_predictions = self._agent_head(attended_queries)
-            output.update(agent_predictions)
+            agents = self._agent_head(attended_queries)
+            output.update(agents)
 
         return output
 

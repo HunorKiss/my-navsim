@@ -29,8 +29,8 @@ class CameraOnlyAgent(AbstractAgent):
         lr: float,
         checkpoint_path: Optional[str] = None,
         trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5),
-        lr_decay_step: int = 3,  # Example: decay every 3 epochs
-        lr_decay_gamma: float = 0.25,  # Example: decay by a factor of 0.1
+        lr_decay_step: int = 1,  # Example: decay every epoch
+        lr_decay_gamma: float = 0.95,  # Example: decay by a factor of 0.95
     ):
         """
         Initializes the agent interface for CameraOnly.
@@ -79,7 +79,7 @@ class CameraOnlyAgent(AbstractAgent):
 
     def get_target_builders(self) -> List[AbstractTargetBuilder]:
         """Inherited, see superclass."""
-        return [CameraOnlyTargetBuilder(trajectory_sampling=self._trajectory_sampling)]
+        return [CameraOnlyTargetBuilder(trajectory_sampling=self._trajectory_sampling, config=self._config)]
 
     def get_feature_builders(self) -> List[AbstractFeatureBuilder]:
         """Inherited, see superclass."""
@@ -96,7 +96,7 @@ class CameraOnlyAgent(AbstractAgent):
         predictions: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
         """Inherited, see superclass."""
-        return camera_only_loss(targets, predictions)
+        return camera_only_loss(targets, predictions, self._config)
 
     def get_optimizers(self) -> Union[Optimizer, Dict[str, Union[Optimizer, LRScheduler]]]:
         """Inherited, see superclass."""
@@ -106,7 +106,8 @@ class CameraOnlyAgent(AbstractAgent):
             list(self._camera_only_model.vit.parameters()) +
             list(self._camera_only_model.fusion_mlp.parameters()) +
             list(self._camera_only_model.transformer.parameters()) +
-            list(self._camera_only_model._trajectory_head.parameters()),
+            list(self._camera_only_model._trajectory_head.parameters()) +
+            list(self._camera_only_model._agent_head.parameters()),
             lr=self._lr
         )
         """

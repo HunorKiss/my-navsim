@@ -102,13 +102,18 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 class CameraOnlyTargetBuilder(AbstractTargetBuilder):
     """Output target builder for CameraOnly."""
 
-    def __init__(self, trajectory_sampling: TrajectorySampling):
+    def __init__(
+        self,
+        trajectory_sampling: TrajectorySampling,
+        config: CameraOnlyConfig
+    ):
         """
         Initializes the target builder.
         :param trajectory_sampling: trajectory sampling specification.
+        :param config: camera-only configuration.
         """
-
         self._trajectory_sampling = trajectory_sampling
+        self._config = config
 
     def get_unique_name(self) -> str:
         """Inherited, see superclass."""
