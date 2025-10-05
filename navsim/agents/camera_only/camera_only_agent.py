@@ -29,8 +29,8 @@ class CameraOnlyAgent(AbstractAgent):
         lr: float,
         checkpoint_path: Optional[str] = None,
         trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5),
-        lr_decay_step: int = 1,  # Example: decay every epoch
-        lr_decay_gamma: float = 0.95,  # Example: decay by a factor of 0.95
+        lr_decay_step: int,  # Example: decay every epoch
+        lr_decay_gamma: float,  # Example: decay by a factor of 0.95
     ):
         """
         Initializes the agent interface for CameraOnly.

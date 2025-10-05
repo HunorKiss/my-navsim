@@ -11,5 +11,5 @@ trajectory_sampling:
   _convert_: 'all'
   time_horizon: 4
   interval_length: 0.5
-lr_decay_step: 3
-lr_decay_gamma: 0.25
+lr_decay_step: 1
+lr_decay_gamma: 0.95
