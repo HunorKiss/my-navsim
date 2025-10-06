@@ -53,13 +53,6 @@ class CameraOnlyModel(nn.Module):
             nn.Linear(hidden_dim, ego_mlp_output_dim),
         )
 
-        # 5. Multihead Attention for Agent Queries (New Initialization)
-        self.agent_attn = nn.MultiheadAttention(
-            embed_dim=vit_output_dim,  # Same as memory.shape[2]
-            num_heads=num_attention_heads, # Use the config arg, or set to 4
-            batch_first=True
-        )
-
         # 3. Transformer Encoder
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=vit_output_dim, nhead=8),
@@ -73,6 +66,18 @@ class CameraOnlyModel(nn.Module):
             d_model=vit_output_dim
         )
 
+        # 5. Agent queries and attention for agent prediction
+        self.agent_queries = nn.Parameter(torch.randn(config.num_bounding_boxes, vit_output_dim))
+        nn.init.xavier_uniform_(self.agent_queries)
+
+        # 6. Multihead Attention for Agent Queries (New Initialization)
+        self.agent_attn = nn.MultiheadAttention(
+            embed_dim=vit_output_dim,  # Same as memory.shape[2]
+            num_heads=num_attention_heads, # Use the config arg, or set to 4
+            batch_first=True
+        )
+
+        # 7. Agent Prediction Head (Outputs bounding boxes and labels)
         self._agent_head = AgentHead(
             num_agents=config.num_bounding_boxes,
             d_ffn=config.tf_d_ffn,
@@ -156,11 +161,11 @@ class CameraOnlyModel(nn.Module):
         # 2. Preprocess camera input for ViT
         #    Resize to ViT-compatible resolution (224x224), then convert to PIL
         resize_transform = T.Resize((224, 224))
-        camera_input_resized = resize_transform(camera_input, camera_input)
+        camera_input_resized = resize_transform(camera_input)
         pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
 
         # 3. Extract ViT embeddings (CLS token per image)
-        vit_embedding = self._extract_vit_embedding(pil_images, camera_input)
+        vit_embedding, _ = self._extract_vit_embedding(pil_images, camera_input)
 
         # 4. Process ego-status input through MLP
         status_embedding = self.ego_mlp(status_input)  # shape (B, ego_mlp_output_dim)
@@ -180,51 +185,50 @@ class CameraOnlyModel(nn.Module):
 
         return {"trajectory": trajectory}
     
-    def forward(self, features):
+    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
-        Forward pass that predicts trajectory and agents with spatially-aware attention.
+        Forward pass that predicts trajectory and agents with spatially-aware attention,
+        using the transformer-processed global feature for both heads.
         """
+
         camera_input: torch.Tensor = features["front_camera_feature"]  # (B, C, H, W)
         status_input: torch.Tensor = features["status_feature"]        # (B, 11)
         batch_size = camera_input.shape[0]
+        input_device = camera_input.device
 
-        # --- 1. ViT backbone: extract patch embeddings ---
+        status_input = status_input.to(input_device) 
+    
+        # --- 1. ViT backbone: extract CLS token és patch embeddings ---
         resize_transform = T.Resize((224, 224))
         camera_input_resized = resize_transform(camera_input)
         pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
-        vit_outputs = self.image_processor(images=pil_images, return_tensors="pt").to(camera_input.device)
-        vit_emb = self.vit(**vit_outputs).last_hidden_state  # (B, num_patches+1, d_model)
-        patch_embeddings = vit_emb[:, 1:, :]                 # Remove CLS token, shape: (B, num_patches, d_model)
-
+        cls_token, patch_embeddings = self._extract_vit_embedding(pil_images, camera_input) # (B, d_model), (B, patches, d_model)
+        
         # --- 2. Ego-state embedding ---
-        status_embedding = self.ego_mlp(status_input)       # (B, ego_mlp_output_dim)
-        status_embedding = status_embedding.unsqueeze(1)    # (B, 1, d_model)
+        status_embedding = self.ego_mlp(status_input)       # (B, d_model)
+        
+        # --- 3. Fúzió és Fő Transzformáció ---
+        # Egyszerű összeadás a CLS token és az Ego-embedding között
+        fused_feature = self._simple_addition_fusion(cls_token, status_embedding) 
+        
+        # Transformer Encoder (sorozat dimenzió hozzáadása: (B, 1, d_model))
+        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1) # (B, d_model)
 
-        # --- 3. Concatenate patches + ego as memory ---
-        memory = torch.cat([patch_embeddings, status_embedding], dim=1)  # (B, num_patches+1, d_model)
-
-        # --- 4. Agent queries ---
-        if not hasattr(self, "agent_queries"):
-            self.agent_queries = nn.Parameter(torch.randn(self._agent_head._num_objects, memory.shape[2]))
-            nn.init.xavier_uniform_(self.agent_queries)
-        queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, num_agents, d_model)
-
-        # === NEW FIX: Explicitly move queries to the device ===
-        queries = queries.to(camera_input.device) 
-        # ======================================================
-
-        # --- 5. Multihead attention (agent queries attend to memory) ---
-        attended_queries, _ = self.agent_attn(queries, memory, memory)  # (B, num_agents, d_model)
-
-        # --- 6. Trajectory prediction ---
-        cls_token = vit_emb[:, 0, :]  # CLS token for global trajectory
-        trajectory = self._trajectory_head(cls_token)
-
+        # --- 4. Trajectory prediction ---
+        trajectory = self._trajectory_head(transformed_feature) # (B, num_poses, 3)
         output = {"trajectory": trajectory}
 
-        # --- 7. Agent prediction (only during training) ---
+        # --- 5. Agent prediction (MÁR FELDOLGOZOTT GLOBÁLIS FEATURE-ÖKET HASZNÁL) ---
         if self.training:
-            agents = self._agent_head(attended_queries)
+            # A self.agent_queries már az __init__-ben lett inicializálva és az initialize() áthelyezte GPU-ra.
+            
+            # --- Agent queries (a tanult lekérdezések) ---    
+            queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, num_agents, d_model)
+            
+            global_memory = transformed_feature.unsqueeze(1) # (B, 1, d_model)            
+            attended_queries, _ = self.agent_attn(queries, global_memory, global_memory) # (B, num_agents, d_model)
+            
+            agents = self._agent_head(attended_queries) # Az AgentHead megkapja a sorozatot, és maga kezeli.
             output.update(agents)
 
         return output
@@ -236,11 +240,10 @@ class CameraOnlyModel(nn.Module):
         :param image_tensor: (B, C, H, W)
         :return: (B, vit_output_dim)
         """
-        # inputs = {"pixel_values": image_tensor}
         inputs = self.image_processor(images=image_tensor, return_tensors="pt")
         inputs = {k: v.to(camera_input.device) for k, v in inputs.items()}
         vit_outputs = self.vit(**inputs)
-        return vit_outputs.last_hidden_state[:, 0, :]  # CLS token
+        return vit_outputs.last_hidden_state[:, 0, :], vit_outputs.last_hidden_state[:, 1:, :]  # CLS token and everything else
 
 class AgentHead(nn.Module):
     """Bounding box prediction head."""
@@ -258,7 +261,6 @@ class AgentHead(nn.Module):
         :param d_model: input dimensionality
         """
         super(AgentHead, self).__init__()
-
         self._num_objects = num_agents
         self._d_model = d_model
         self._d_ffn = d_ffn
