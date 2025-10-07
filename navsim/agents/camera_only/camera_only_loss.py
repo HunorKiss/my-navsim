@@ -18,7 +18,7 @@ def camera_only_loss( targets: Dict[str, torch.Tensor], predictions: Dict[str, t
 
     # === NEW FIX: Conditionally calculate agent loss ===
     # Only calculate agent loss if the model returned predictions for agents
-    if "agent_states" in predictions:
+    if config.aux_tasks_enabled and "agent_states" in predictions and "agent_labels" in predictions:
         agent_class_loss, agent_box_loss = _agent_loss(targets, predictions, config)
         loss = (
             config.trajectory_weight * trajectory_loss

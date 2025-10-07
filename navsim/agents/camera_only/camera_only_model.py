@@ -20,6 +20,8 @@ class CameraOnlyModel(nn.Module):
         """
         super().__init__()
 
+        self._aux_tasks_enabled = config.aux_tasks_enabled
+
         # 1. Vision Transformer (ViT) Backbone
         # For Google ViT model, use AutoFeatureExtractor and AutoModel from transformers library
         # Replace with DINO
@@ -219,13 +221,15 @@ class CameraOnlyModel(nn.Module):
         output = {"trajectory": trajectory}
 
         # --- 5. Agent prediction (MÁR FELDOLGOZOTT GLOBÁLIS FEATURE-ÖKET HASZNÁL) ---
-        if self.training:
+        if self.training and self._aux_tasks_enabled:
             # A self.agent_queries már az __init__-ben lett inicializálva és az initialize() áthelyezte GPU-ra.
             
             # --- Agent queries (a tanult lekérdezések) ---    
             queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, num_agents, d_model)
             
-            global_memory = transformed_feature.unsqueeze(1) # (B, 1, d_model)            
+            print("Its training and aux tasks enabled")
+
+            global_memory = transformed_feature.unsqueeze(1) # (B, 1, d_model)
             attended_queries, _ = self.agent_attn(queries, global_memory, global_memory) # (B, num_agents, d_model)
             
             agents = self._agent_head(attended_queries) # Az AgentHead megkapja a sorozatot, és maga kezeli.

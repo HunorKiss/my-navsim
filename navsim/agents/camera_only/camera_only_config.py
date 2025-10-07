@@ -10,6 +10,8 @@ from nuplan.common.maps.abstract_map import SemanticMapLayer
 class CameraOnlyConfig:
     """Global CameraOnly config."""
 
+    aux_tasks_enabled: bool = True
+
     # detection
     environment_min_x: float = -32
     environment_max_x: float = 32
