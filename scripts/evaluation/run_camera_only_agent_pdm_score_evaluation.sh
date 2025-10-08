@@ -1,5 +1,15 @@
+export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
+export NAVSIM_EXP_ROOT=~/thesis/exp
+export NAVSIM_DEVKIT_ROOT=~/thesis/my-navsim
+export OPENSCENE_DATA_ROOT=~/thesis/dataset
+export NUPLAN_MAPS_ROOT=~/thesis/dataset/maps
+export PYTHONPATH=$NAVSIM_DEVKIT_ROOT:$PYTHONPATH
+
+export CUDA_VISIBLE_DEVICES=0
+export HYDRA_FULL_ERROR=1 
+
 TRAIN_TEST_SPLIT=navhard_two_stage
-CHECKPOINT=$NAVSIM_EXP_ROOT/auxiliary_model_w_agents/2025.10.04.13.34.17/thesis/t8p3gwa1/checkpoints/epoch39.ckpt
+CHECKPOINT=$NAVSIM_EXP_ROOT/auxiliary_model_w_agents_v3/2025.10.08.04.33.00/thesis/cqmquyyx/checkpoints/epoch6.ckpt
 CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache
 SYNTHETIC_SENSOR_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/sensor_blobs
 SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/synthetic_scene_pickles

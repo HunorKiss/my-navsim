@@ -7,7 +7,7 @@ from navsim.agents.camera_only.camera_only_features import CameraOnlyFeatureBuil
 from torchvision import transforms
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, CosineAnnealingWarmRestarts
 
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from navsim.agents.abstract_agent import AbstractAgent
@@ -48,18 +48,22 @@ class CameraOnlyAgent(AbstractAgent):
 
         self._camera_only_model = CameraOnlyModel(self._trajectory_sampling, self._config)
 
+        for param in self._camera_only_model.vit.parameters():
+            param.requires_grad = True  # True = fine-tune, False = freeze
+
     def name(self) -> str:
         """Inherited, see superclass."""
         return self.__class__.__name__
 
     def initialize(self) -> None:
         """Inherited, see superclass."""
-        if torch.cuda.is_available():
-            state_dict: Dict[str, Any] = torch.load(self._checkpoint_path)["state_dict"]
-        else:
-            state_dict: Dict[str, Any] = torch.load(self._checkpoint_path, map_location=torch.device("cpu"))[
-                "state_dict"
-            ]
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._camera_only_model.to_empty(device=device)
+
+        state_dict: Dict[str, Any] = torch.load(self._checkpoint_path, map_location=device)[
+            "state_dict"
+        ]
         self.load_state_dict({k.replace("agent.", ""): v for k, v in state_dict.items()})
 
     def get_sensor_config(self) -> SensorConfig:
@@ -87,6 +91,12 @@ class CameraOnlyAgent(AbstractAgent):
 
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Inherited, see superclass."""
+
+        model_device = next(self._camera_only_model.parameters()).device
+        for key, value in features.items():
+            if isinstance(value, torch.Tensor):
+                features[key] = value.to(model_device)
+                
         return self._camera_only_model(features)
 
     def compute_loss(
@@ -110,7 +120,15 @@ class CameraOnlyAgent(AbstractAgent):
             list(self._camera_only_model._agent_head.parameters()),
             lr=self._lr
         )
-        """
-        optimizer = torch.optim.Adam(self._camera_only_model.parameters(), lr=self._lr)
         scheduler = StepLR(optimizer, step_size=self._lr_decay_step, gamma=self._lr_decay_gamma)
+        """
+
+        optimizer = torch.optim.Adam(self._camera_only_model.parameters(), lr=self._lr)
+        # Cosine annealing scheduler
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=5,      # első félperiódus = 10 epoch
+            T_mult=2,    # a következő periódus hossza kétszerese az előzőnek
+            eta_min=1e-5)  # a minimális LR
+
         return {"optimizer": optimizer, "lr_scheduler": scheduler}

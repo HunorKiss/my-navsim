@@ -78,7 +78,7 @@ class AbstractAgent(torch.nn.Module, ABC):
         # forward pass
         with torch.no_grad():
             predictions = self.forward(features)
-            poses = predictions["trajectory"].squeeze(0).numpy()
+            poses = predictions["trajectory"].squeeze(0).cpu().numpy()
 
         # extract trajectory
         return Trajectory(poses, self._trajectory_sampling)

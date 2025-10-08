@@ -13,7 +13,7 @@ from torchvision.transforms.functional import to_pil_image
 
 
 class CameraOnlyModel(nn.Module):
-    def __init__(self, trajectory_sampling: TrajectorySampling, config: CameraOnlyConfig, hidden_dim=128, ego_mlp_output_dim=384, num_attention_heads=4):
+    def __init__(self, trajectory_sampling: TrajectorySampling, config: CameraOnlyConfig, hidden_dim=128, ego_mlp_output_dim=32, num_attention_heads=4):
         """
         Initializes the camera-only model with ViT backbone and Transformer encoder.
 
@@ -94,6 +94,8 @@ class CameraOnlyModel(nn.Module):
         self.fusion_mlp = nn.Sequential(
             nn.Linear(fusion_dim, hidden_dim),
             nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
             nn.Linear(hidden_dim, vit_output_dim),  # Project back to ViT dimension (optional)
         )
 
@@ -164,10 +166,9 @@ class CameraOnlyModel(nn.Module):
         #    Resize to ViT-compatible resolution (224x224), then convert to PIL
         resize_transform = T.Resize((224, 224))
         camera_input_resized = resize_transform(camera_input)
-        pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
 
         # 3. Extract ViT embeddings (CLS token per image)
-        vit_embedding, _ = self._extract_vit_embedding(pil_images, camera_input)
+        vit_embedding, _ = self._extract_vit_embedding(camera_input_resized)
 
         # 4. Process ego-status input through MLP
         status_embedding = self.ego_mlp(status_input)  # shape (B, ego_mlp_output_dim)
@@ -188,66 +189,56 @@ class CameraOnlyModel(nn.Module):
         return {"trajectory": trajectory}
     
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """
-        Forward pass that predicts trajectory and agents with spatially-aware attention,
-        using the transformer-processed global feature for both heads.
-        """
 
-        camera_input: torch.Tensor = features["front_camera_feature"]  # (B, C, H, W)
-        status_input: torch.Tensor = features["status_feature"]        # (B, 11)
-        batch_size = camera_input.shape[0]
-        input_device = camera_input.device
+        camera_input = features["front_camera_feature"]
+        status_input = features["status_feature"]
 
-        status_input = status_input.to(input_device) 
-    
-        # --- 1. ViT backbone: extract CLS token és patch embeddings ---
+        # ViT backbone
         resize_transform = T.Resize((224, 224))
         camera_input_resized = resize_transform(camera_input)
-        pil_images = [to_pil_image(img.cpu()) for img in camera_input_resized]
-        cls_token, patch_embeddings = self._extract_vit_embedding(pil_images, camera_input) # (B, d_model), (B, patches, d_model)
-        
-        # --- 2. Ego-state embedding ---
-        status_embedding = self.ego_mlp(status_input)       # (B, d_model)
-        
-        # --- 3. Fúzió és Fő Transzformáció ---
-        # Egyszerű összeadás a CLS token és az Ego-embedding között
-        fused_feature = self._simple_addition_fusion(cls_token, status_embedding) 
-        
-        # Transformer Encoder (sorozat dimenzió hozzáadása: (B, 1, d_model))
-        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1) # (B, d_model)
+        cls_token, _ = self._extract_vit_embedding(camera_input_resized)  # cls_token: (B, d_model)
 
-        # --- 4. Trajectory prediction ---
-        trajectory = self._trajectory_head(transformed_feature) # (B, num_poses, 3)
-        output = {"trajectory": trajectory}
+        # Ego-state embedding
+        status_embedding = self.ego_mlp(status_input)            # (B, d_model or ego_mlp_output_dim)
 
-        # --- 5. Agent prediction (MÁR FELDOLGOZOTT GLOBÁLIS FEATURE-ÖKET HASZNÁL) ---
+        # Fuse features
+        fused_feature = self._concatenate_and_fuse_features(cls_token, status_embedding)
+
+        # Temporal Transformer
+        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1)
+
+        # Trajectory prediction
+        output = {"trajectory": self._trajectory_head(transformed_feature)}
+
+        # Optional agent prediction
         if self.training and self._aux_tasks_enabled:
-            # A self.agent_queries már az __init__-ben lett inicializálva és az initialize() áthelyezte GPU-ra.
-            
-            # --- Agent queries (a tanult lekérdezések) ---    
-            queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, num_agents, d_model)
-            
-            print("Its training and aux tasks enabled")
-
-            global_memory = transformed_feature.unsqueeze(1) # (B, 1, d_model)
-            attended_queries, _ = self.agent_attn(queries, global_memory, global_memory) # (B, num_agents, d_model)
-            
-            agents = self._agent_head(attended_queries) # Az AgentHead megkapja a sorozatot, és maga kezeli.
-            output.update(agents)
+            batch_size = camera_input.shape[0]
+            queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)
+            global_memory = transformed_feature.unsqueeze(1)
+            attended_queries, _ = self.agent_attn(queries, global_memory, global_memory)
+            output.update(self._agent_head(attended_queries))
 
         return output
 
 
-    def _extract_vit_embedding(self, image_tensor: torch.Tensor, camera_input) -> torch.Tensor:
+    def _extract_vit_embedding(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Extract CLS token embedding from ViT.
-        :param image_tensor: (B, C, H, W)
-        :return: (B, vit_output_dim)
+        Extract CLS token and patch embeddings from ViT.
+        Input: image_tensor (B, C, H, W), float [0,1]
+        Output: cls_token (B, d_model), patch_embeddings (B, num_patches, d_model)
         """
-        inputs = self.image_processor(images=image_tensor, return_tensors="pt")
-        inputs = {k: v.to(camera_input.device) for k, v in inputs.items()}
+        # 1. Get model’s device
+        device = next(self.vit.parameters()).device
+
+        # 2. Move image to same device
+        image_tensor = image_tensor.to(device)
+
+        inputs = {"pixel_values": image_tensor}
         vit_outputs = self.vit(**inputs)
-        return vit_outputs.last_hidden_state[:, 0, :], vit_outputs.last_hidden_state[:, 1:, :]  # CLS token and everything else
+
+        cls_token = vit_outputs.last_hidden_state[:, 0, :]       # CLS token
+        patch_embeddings = vit_outputs.last_hidden_state[:, 1:, :]  # all other tokens
+        return cls_token, patch_embeddings
 
 class AgentHead(nn.Module):
     """Bounding box prediction head."""
