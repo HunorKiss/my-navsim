@@ -9,7 +9,7 @@ export CUDA_VISIBLE_DEVICES=0
 export HYDRA_FULL_ERROR=1 
 
 TRAIN_TEST_SPLIT=navhard_two_stage
-CHECKPOINT=$NAVSIM_EXP_ROOT/auxiliary_model_w_agents_v3/2025.10.08.04.33.00/thesis/cqmquyyx/checkpoints/epoch6.ckpt
+CHECKPOINT=$NAVSIM_EXP_ROOT/auxiliary_model_w_agents_dinov3_v1/2025.10.10.08.53.15/thesis/60bwtwmv/checkpoints/epoch12.ckpt
 CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache
 SYNTHETIC_SENSOR_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/sensor_blobs
 SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/synthetic_scene_pickles
@@ -17,7 +17,7 @@ SYNTHETIC_SCENES_PATH=$OPENSCENE_DATA_ROOT/navhard_two_stage/synthetic_scene_pic
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_pdm_score.py \
 train_test_split=$TRAIN_TEST_SPLIT \
 agent=camera_only_agent \
-experiment_name=auxiliary_model_w_agents_evaluation \
+experiment_name=auxiliary_model_w_agents_evaluation_v5 \
 worker=single_machine_thread_pool \
 agent.checkpoint_path=$CHECKPOINT \
 metric_cache_path=$CACHE_PATH \
