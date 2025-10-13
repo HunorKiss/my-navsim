@@ -16,8 +16,6 @@ from navsim.agents.camera_only.camera_only_config import CameraOnlyConfig
 class CameraOnlyAgent(AbstractAgent):
     """Agent implementing a robust DINO-BEV-Query model."""
 
-    requires_scene = False
-
     def __init__(
         self,
         config: CameraOnlyConfig,
@@ -39,8 +37,8 @@ class CameraOnlyAgent(AbstractAgent):
         self._camera_only_model = CameraOnlyModel(self._trajectory_sampling, self._config)
 
         # FIGYELEM: A ViT finomhangolása itt van bekapcsolva!
-        for param in self._camera_only_model._model_vit.parameters():
-            param.requires_grad = True # Engedélyezi a DINO súlyainak finomhangolását
+        #for param in self._camera_only_model._model_vit.parameters():
+        #    param.requires_grad = True # Engedélyezi a DINO súlyainak finomhangolását
 
     def name(self) -> str:
         """Inherited, see superclass."""
@@ -89,11 +87,12 @@ class CameraOnlyAgent(AbstractAgent):
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Modell futtatása és bemenet áthelyezése a modell eszközére."""
 
-        model_device = next(self._camera_only_model.parameters()).device
-        for key, value in features.items():
-            if isinstance(value, torch.Tensor):
-                features[key] = value.to(model_device)
-                
+        # Nem helyes, ha a bemeneteket itt helyezzük át, mert a DDP már kezeli az eszközöket.
+        #model_device = next(self._camera_only_model.parameters()).device
+        #for key, value in features.items():
+        #    if isinstance(value, torch.Tensor):
+        #        features[key] = value.to(model_device)
+        
         return self._camera_only_model(features)
 
     def compute_loss(

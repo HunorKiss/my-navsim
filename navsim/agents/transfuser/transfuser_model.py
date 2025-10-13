@@ -31,7 +31,7 @@ class TransfuserModel(nn.Module):
         self._config = config
         self._backbone = TransfuserBackbone(config)
 
-        self._keyval_embedding = nn.Embedding(8**2 + 1, config.tf_d_model)  # 8x8 feature grid + trajectory
+        self._keyval_embedding = nn.Embedding(14**2 + 1, config.tf_d_model)  # 8x8 feature grid + trajectory
         self._query_embedding = nn.Embedding(sum(self._query_splits), config.tf_d_model)
 
         # usually, the BEV features are variable in size.

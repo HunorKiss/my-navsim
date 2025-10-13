@@ -24,11 +24,11 @@ D_MODEL_TARGET = 1024  # A stabil Transzformer dimenzió
 # --- SEGÉD OSZTÁLYOK (Fejek) ---
 class BEVSemanticHead(nn.Module):
     """Auxiliary BEV Semantic Head: Többlépcsős (Multi-Step) Upsampling"""
-    def __init__(self, d_model: int, num_classes: int, bev_target_height: int = 128, bev_target_width: int = 256):
+    def __init__(self, d_model: int, num_classes: int):
         super().__init__()
         
-        self.bev_target_height = bev_target_height
-        self.bev_target_width = bev_target_width
+        self.bev_target_height = 128
+        self.bev_target_width = 256
         
         # A bemenetünk most 14x14 (DINO patch-ek)
         
@@ -140,6 +140,11 @@ class TrajectoryHead(nn.Module):
 class CameraOnlyModel(nn.Module):
     def __init__(self, trajectory_sampling: TrajectorySampling, config: CameraOnlyConfig):
         super().__init__()
+
+        self._query_splits = [
+            1,
+            config.num_bounding_boxes
+        ]  # 1 trajectory + N agents
         
         self._config = config
         self._aux_tasks_enabled = config.aux_tasks_enabled
@@ -153,11 +158,7 @@ class CameraOnlyModel(nn.Module):
         self._feature_projector = nn.Linear(vit_output_dim, D_MODEL_TARGET) 
         
         # 3. Ego Status Encoder (MLP)
-        self._status_encoding = nn.Sequential(
-            nn.Linear(11, 512), 
-            nn.ReLU(),
-            nn.Linear(512, D_MODEL_TARGET), # 1024
-        )
+        self._status_encoding = nn.Linear(11, D_MODEL_TARGET)  # 8 -> 1024
 
         # 4. Transzformer Dekóder (BEV Fúzió és Lekérdezés)
         tf_decoder_layer = nn.TransformerDecoderLayer(
@@ -167,10 +168,10 @@ class CameraOnlyModel(nn.Module):
             dropout=config.tf_dropout,
             batch_first=True,
         )
-        self._bev_transformer_decoder = nn.TransformerDecoder(tf_decoder_layer, config.tf_num_layers)
+        self._transformer_decoder = nn.TransformerDecoder(tf_decoder_layer, config.tf_num_layers)
 
         # 5. Queries (Trajektória és Agent)
-        self._query_splits = [1, config.num_bounding_boxes]
+        self._keyval_embedding = nn.Embedding(14**2 + 1, D_MODEL_TARGET)
         self._query_embedding = nn.Embedding(sum(self._query_splits), D_MODEL_TARGET)
 
         # 6. Fejek Inicializálása
@@ -190,26 +191,28 @@ class CameraOnlyModel(nn.Module):
 
     # --- Segédfüggvény: DINO feature kinyerése ---
     def _extract_dino_features(self, image_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        device = next(self._model_vit.parameters()).device
         
-        # Négyzetes bemenetre kényszerítés (256x256)
-        resize_transform = nn.Upsample(size=(256, 256), mode='bilinear', align_corners=False).to(device)
-        image_tensor = resize_transform(image_tensor).to(device)
+        device = self._model_vit.device
+        # print(device)
+
+        # Négyzetes bemenetre kényszerítés (224x224)
+        resize_transform = nn.Upsample(size=(224, 224), mode='bilinear', align_corners=False)
+        image_tensor = resize_transform(image_tensor)
 
         inputs = self._processor(images=image_tensor, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        # inputs = {k: v.to(device) for k, v in inputs.items()}
         
         # Futtatás (GRADIENSEKKEL!)
         outputs = self._model_vit(**inputs)
 
         cls_token = outputs.last_hidden_state[:, 0, :]       
-        patch_embeddings = outputs.last_hidden_state[:, 1:, :]  # 200 token (196 patch + 4 register)
+        patch_embeddings = outputs.last_hidden_state[:, 5:, :]  # 4 register token + 196 patch token 
         return cls_token, patch_embeddings
 
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         
         camera_feature: torch.Tensor = features["front_camera_feature"]
-        status_feature: torch.Tensor = features["status_feature"].to(camera_feature.device)
+        status_feature: torch.Tensor = features["status_feature"]
 
         # 1. DINO Feature Kinyerés és Projekció
         _, patch_embeddings_4096 = self._extract_dino_features(camera_feature)
@@ -220,13 +223,13 @@ class CameraOnlyModel(nn.Module):
         global_status_token = status_encoding_1024.unsqueeze(1) 
 
         # 3. Memória Képzés
-        memory = torch.cat([patch_embeddings_1024, global_status_token], dim=1) 
+        keyval = torch.cat([patch_embeddings_1024, global_status_token], dim=1)
+        keyval += self._keyval_embedding.weight[None, ...]
         
         # 4. Dekóder Futtatása
         batch_size = camera_feature.shape[0]
-        queries = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1).to(camera_feature.device)
-        
-        query_out = self._bev_transformer_decoder(queries, memory) 
+        queries = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
+        query_out = self._transformer_decoder(queries, keyval) 
         
         # 5. Fejek (Kimeneti szétválasztás)
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
@@ -242,16 +245,11 @@ class CameraOnlyModel(nn.Module):
             output.update(agents)
 
             # BEV Szemantika (Auxiliary Task)
-            bev_feature_map = memory[:, :-1, :] 
-            N_PATCHES_SPATIAL = 196 # 14 x 14 = 196 (A valós térbeli tokenek száma)
-            
-            # Levágjuk a felesleges register tokeneket (a sorozat végéről)
-            bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :] # Vissza: (B, 196, 1024)
-            
-            # Visszaalakítás 2D-re: 14 x 14
-            bev_size = 14 
-            # MOST MÁR PONTOSAN IGAZOLT AZ 196 = 14 * 14
+            ''' N_PATCHES_SPATIAL = 196
+            bev_feature_map = keyval[:, :-1, :]    
+            bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :]
+            bev_size = 14        
             bev_feature_map_2d = bev_feature_map_clean.permute(0, 2, 1).reshape(batch_size, D_MODEL_TARGET, bev_size, bev_size)
-            output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d)
+            output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d) '''
 
         return output

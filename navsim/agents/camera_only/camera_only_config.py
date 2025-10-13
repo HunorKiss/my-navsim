@@ -10,7 +10,7 @@ from nuplan.common.maps.abstract_map import SemanticMapLayer
 class CameraOnlyConfig:
     """Global CameraOnly config."""
 
-    aux_tasks_enabled: bool = True
+    aux_tasks_enabled: bool = False
 
     # detection
     environment_min_x: float = -32
@@ -23,7 +23,7 @@ class CameraOnlyConfig:
     # loss weights
     trajectory_weight: float = 10.0
     agent_class_weight: float = 10.0
-    bev_semantic_weight: float = 10.0
+    bev_semantic_weight: float = 1.0
     agent_box_weight: float = 1.0
 
     # Transformer

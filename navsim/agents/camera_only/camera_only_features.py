@@ -73,7 +73,7 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 
         # OpenCV gives BGR, convert to RGB
         # l-----> ez változtatás a TransFuserhez képest
-        resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        #resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
 
         tensor_image = transforms.ToTensor()(resized_image)
 
@@ -101,7 +101,7 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 
         # OpenCV gives BGR, convert to RGB
         # l-----> ez változtatás a TransFuserhez képest
-        resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        #resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
 
         tensor_image = transforms.ToTensor()(resized_image)
 
