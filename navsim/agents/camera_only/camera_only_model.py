@@ -245,11 +245,11 @@ class CameraOnlyModel(nn.Module):
             output.update(agents)
 
             # BEV Szemantika (Auxiliary Task)
-            ''' N_PATCHES_SPATIAL = 196
-            bev_feature_map = keyval[:, :-1, :]    
-            bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :]
-            bev_size = 14        
-            bev_feature_map_2d = bev_feature_map_clean.permute(0, 2, 1).reshape(batch_size, D_MODEL_TARGET, bev_size, bev_size)
-            output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d) '''
+            #N_PATCHES_SPATIAL = 196
+            #bev_feature_map = keyval[:, :-1, :]    
+            #bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :]
+            #bev_size = 14        
+            #bev_feature_map_2d = bev_feature_map_clean.permute(0, 2, 1).reshape(batch_size, D_MODEL_TARGET, bev_size, bev_size)
+            #output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d)
 
         return output
