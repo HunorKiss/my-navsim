@@ -18,7 +18,7 @@ from transformers.image_utils import load_image
 
 # --- KONSTANS BEÁLLÍTÁSOK ---
 DINO_MODEL_NAME = "facebook/dinov3-vitl16-pretrain-lvd1689m"
-D_MODEL_TARGET = 1024  # A stabil Transzformer dimenzió
+D_MODEL_TARGET = 1024  # A patchek beágyazásának cél dimenziója (1024)
 
 
 # --- SEGÉD OSZTÁLYOK (Fejek) ---
@@ -152,13 +152,13 @@ class CameraOnlyModel(nn.Module):
         # 1. DINO Vizuális Encoder (4096 dimenzió)
         self._processor = AutoImageProcessor.from_pretrained(DINO_MODEL_NAME)
         self._model_vit = AutoModel.from_pretrained(DINO_MODEL_NAME)
-        vit_output_dim = self._model_vit.config.hidden_size  # 4096
-
-        # 2. Projekció: 4096 -> 1024 (Dimenziócsökkentés)
-        self._feature_projector = nn.Linear(vit_output_dim, D_MODEL_TARGET) 
-        
+     
         # 3. Ego Status Encoder (MLP)
-        self._status_encoding = nn.Linear(11, D_MODEL_TARGET)  # 8 -> 1024
+        self._status_encoding = nn.Sequential(
+            nn.Linear(11, 512), 
+            nn.LReLU(),
+            nn.Linear(512, D_MODEL_TARGET), # 1024
+        )  # 11 -> 1024
 
         # 4. Transzformer Dekóder (BEV Fúzió és Lekérdezés)
         tf_decoder_layer = nn.TransformerDecoderLayer(
@@ -185,28 +185,25 @@ class CameraOnlyModel(nn.Module):
             d_ffn=config.tf_d_ffn,
             d_model=D_MODEL_TARGET
         )
-        self._bev_semantic_head = BEVSemanticHead(
-            d_model=D_MODEL_TARGET, num_classes=config.num_bev_classes
-        )
+        #self._bev_semantic_head = BEVSemanticHead(
+        #    d_model=D_MODEL_TARGET, num_classes=config.num_bev_classes
+        #)
 
     # --- Segédfüggvény: DINO feature kinyerése ---
     def _extract_dino_features(self, image_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         
         device = self._model_vit.device
-        # print(device)
+        print(device)
 
-        # Négyzetes bemenetre kényszerítés (224x224)
-        resize_transform = nn.Upsample(size=(224, 224), mode='bilinear', align_corners=False)
-        image_tensor = resize_transform(image_tensor)
-
+        # Nem kell átméretezés, a bemenet 256x256 pixel, amit a _processor is elfogad
         inputs = self._processor(images=image_tensor, return_tensors="pt")
-        # inputs = {k: v.to(device) for k, v in inputs.items()}
+        #inputs = {k: v.to(device) for k, v in inputs.items()}
         
         # Futtatás (GRADIENSEKKEL!)
         outputs = self._model_vit(**inputs)
 
-        cls_token = outputs.last_hidden_state[:, 0, :]       
-        patch_embeddings = outputs.last_hidden_state[:, 5:, :]  # 4 register token + 196 patch token 
+        cls_token = outputs.last_hidden_state[:, 0, :] # Batch, 1, 1024       
+        patch_embeddings = outputs.last_hidden_state[:, 5:, :]  # 1 CLS + 4 register token + 256 patch token 
         return cls_token, patch_embeddings
 
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -215,8 +212,7 @@ class CameraOnlyModel(nn.Module):
         status_feature: torch.Tensor = features["status_feature"]
 
         # 1. DINO Feature Kinyerés és Projekció
-        _, patch_embeddings_4096 = self._extract_dino_features(camera_feature)
-        patch_embeddings_1024 = self._feature_projector(patch_embeddings_4096)
+        _, patch_embeddings_1024 = self._extract_dino_features(camera_feature)
 
         # 2. Ego Kódolás
         status_encoding_1024 = self._status_encoding(status_feature)
@@ -245,11 +241,11 @@ class CameraOnlyModel(nn.Module):
             output.update(agents)
 
             # BEV Szemantika (Auxiliary Task)
-            #N_PATCHES_SPATIAL = 196
-            #bev_feature_map = keyval[:, :-1, :]    
-            #bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :]
-            #bev_size = 14        
-            #bev_feature_map_2d = bev_feature_map_clean.permute(0, 2, 1).reshape(batch_size, D_MODEL_TARGET, bev_size, bev_size)
-            #output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d)
+            ''' N_PATCHES_SPATIAL = 196
+            bev_feature_map = keyval[:, :-1, :]    
+            bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :]
+            bev_size = 14        
+            bev_feature_map_2d = bev_feature_map_clean.permute(0, 2, 1).reshape(batch_size, D_MODEL_TARGET, bev_size, bev_size)
+            output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d) '''
 
         return output

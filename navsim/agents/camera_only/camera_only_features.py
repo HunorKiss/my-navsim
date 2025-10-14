@@ -39,7 +39,6 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 
         features = {}
         features["front_camera_feature"] = self._get_front_camera_feature(agent_input)
-        # features["back_camera_feature"] = self._get_back_camera_feature(agent_input)
         features["status_feature"] = torch.concatenate(
             [
                 torch.tensor(agent_input.ego_statuses[-1].driving_command, dtype=torch.float32),
@@ -62,18 +61,12 @@ class CameraOnlyFeatureBuilder(AbstractFeatureBuilder):
 
         cameras = agent_input.cameras[-1]
 
-        # Crop to ensure 4:1 aspect ratio
-        l0 = cameras.cam_l0.image[28:-28, 416:-416]
-        f0 = cameras.cam_f0.image[28:-28]
-        r0 = cameras.cam_r0.image[28:-28, 416:-416]
+        # We only use the front camera for DINOv3
+        f0 = cameras.cam_f0.image
 
-        # stitch l0, f0, r0 images
-        stitched_image = np.concatenate([l0, f0, r0], axis=1)
-        resized_image = cv2.resize(stitched_image, (1024, 256))
-
-        # OpenCV gives BGR, convert to RGB
-        # l-----> ez változtatás a TransFuserhez képest
-        #resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        # resize to provide proper input for DINOv3
+        # 256 / 16 = 16 will be the number of patches in a row/column, so we will have 16*16=256 patches
+        resized_image = cv2.resize(f0, (256, 256))
 
         tensor_image = transforms.ToTensor()(resized_image)
 
@@ -138,13 +131,12 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
         ego_pose = StateSE2(*scene.frames[frame_idx].ego_status.ego_pose)
 
         agent_states, agent_labels = self._compute_agent_targets(annotations)
-        bev_semantic_map = self._compute_bev_semantic_map(annotations, scene.map_api, ego_pose)
+        # bev_semantic_map = self._compute_bev_semantic_map(annotations, scene.map_api, ego_pose)
 
         return {
             "trajectory": trajectory,
             "agent_states": agent_states,
             "agent_labels": agent_labels,
-            "bev_semantic_map": bev_semantic_map
         }
     
     def _compute_agent_targets(self, annotations: Annotations) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -170,8 +162,8 @@ class CameraOnlyTargetBuilder(AbstractTargetBuilder):
             if not inside_square:
                 return False
 
-            # 2. Front camera FOV check (140 degrees)
-            fov_rad = math.radians(140)  # 140 degrees in radians
+            # 2. Front camera FOV check (60 degrees)
+            fov_rad = math.radians(60)  # 60 degrees in radians
             angle = math.atan2(y, x)     # angle from ego to agent (0 = straight ahead)
             if abs(angle) > fov_rad / 2:
                 return False
