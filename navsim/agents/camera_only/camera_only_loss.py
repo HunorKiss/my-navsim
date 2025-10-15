@@ -18,14 +18,12 @@ def camera_only_loss( targets: Dict[str, torch.Tensor], predictions: Dict[str, t
 
     # === NEW FIX: Conditionally calculate agent loss ===
     # Only calculate agent loss if the model returned predictions for agents
-    if config.aux_tasks_enabled:
+    if config.aux_tasks_enabled and "agent_states" in predictions and "agent_labels" in predictions:
         agent_class_loss, agent_box_loss = _agent_loss(targets, predictions, config)
-        # bev_semantic_loss = F.cross_entropy(predictions["bev_semantic_map"], targets["bev_semantic_map"].long())
         loss = (
             config.trajectory_weight * trajectory_loss
             + config.agent_class_weight * agent_class_loss
             + config.agent_box_weight * agent_box_loss
-            # + config.bev_semantic_weight * bev_semantic_loss
         )
         return loss
     else:

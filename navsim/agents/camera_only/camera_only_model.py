@@ -1,69 +1,255 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, Tuple, Any, List, Union
-from transformers import AutoModel, AutoImageProcessor
-from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
-from navsim.common.enums import StateSE2Index
 import torchvision.transforms as T
-from typing import Dict, Tuple
+from typing import Dict
+from transformers import AutoFeatureExtractor, AutoModel, AutoImageProcessor, SwinModel
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from navsim.common.enums import StateSE2Index
 from navsim.agents.camera_only.cross_attention import CrossAttention
 from navsim.agents.camera_only.camera_only_features import BoundingBox2DIndex
 from navsim.agents.camera_only.camera_only_config import CameraOnlyConfig
 from torchvision.transforms.functional import to_pil_image
-from transformers import pipeline
-from transformers.image_utils import load_image
-
-# --- KONSTANS BEÁLLÍTÁSOK ---
-DINO_MODEL_NAME = "facebook/dinov3-vitl16-pretrain-lvd1689m"
-D_MODEL_TARGET = 1024  # A patchek beágyazásának cél dimenziója (1024)
 
 
-# --- SEGÉD OSZTÁLYOK (Fejek) ---
-class BEVSemanticHead(nn.Module):
-    """Auxiliary BEV Semantic Head: Többlépcsős (Multi-Step) Upsampling"""
-    def __init__(self, d_model: int, num_classes: int):
+class CameraOnlyModel(nn.Module):
+    def __init__(self, trajectory_sampling: TrajectorySampling, config: CameraOnlyConfig):
+        """
+        Initializes the camera-only model with ViT backbone and Transformer encoder.
+
+        """
         super().__init__()
-        
-        self.bev_target_height = 128
-        self.bev_target_width = 256
-        
-        # A bemenetünk most 14x14 (DINO patch-ek)
-        
-        self.decoder = nn.Sequential(
-            # Lépés 1: Dimenziócsökkentés
-            nn.Conv2d(d_model, d_model // 2, kernel_size=3, padding=1), # Pl. 1024 -> 512 csatorna
-            nn.ReLU(),
 
-            # Lépés 2: Felskálázás (14 -> 28)
-            nn.ConvTranspose2d(d_model // 2, d_model // 4, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            
-            # Lépés 3: Felskálázás (28 -> 56)
-            nn.ConvTranspose2d(d_model // 4, d_model // 8, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
+        hidden_dim=128
+        num_attention_heads = 4
 
-            # Lépés 4: FPN-szerű utolsó lépés (56 -> 112)
-            nn.ConvTranspose2d(d_model // 8, d_model // 16, kernel_size=4, stride=2, padding=1),
+        self._aux_tasks_enabled = config.aux_tasks_enabled
+
+        # 1. Vision Transformer (ViT) Backbone
+        # For Google ViT model, use AutoFeatureExtractor and AutoModel from transformers library
+        # Replace with DINO
+        self.image_processor = AutoImageProcessor.from_pretrained("facebook/dino-vits8")
+        self.vit = AutoModel.from_pretrained("facebook/dino-vits8")
+        vit_output_dim = self.vit.config.hidden_size  # should be 384 for dino-vits8
+
+        '''
+        self.feature_extractor = AutoFeatureExtractor.from_pretrained(vit_model) # preprocessing pipeline for the vit model
+        self.vit = AutoModel.from_pretrained(vit_model)
+        vit_output_dim = 768
+        '''
+
+        '''
+        # For Swin Transformer model, use AutoImageProcessor and SwinModel from transformers library
+        self.feature_extractor = AutoImageProcessor.from_pretrained(vit_model) # preprocessing pipeline for the vit model
+        self.vit = SwinModel.from_pretrained(vit_model)
+        vit_output_dim = 1024    # Swin produces a 768D feature vector, google produces a 1024D feature vector
+        '''
+        
+        # Feature Fusion
+        # self._initialize_concatenation_merge_fusion(vit_output_dim, vit_output_dim, hidden_dim)
+        # self._initialize_cross_attention_fusion(vit_output_dim, ego_mlp_output_dim, hidden_dim, num_attention_heads)
+
+        # 2. Ego-Status Feature Extractor
+        self.ego_mlp = nn.Sequential(
+            nn.Linear(11, hidden_dim),
             nn.ReLU(),
-            
-            # Végleges felskálázás és kimeneti osztályok (112 -> 128 / 256-ra kényszerítve)
-            nn.Conv2d(d_model // 16, num_classes, kernel_size=1)
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, vit_output_dim),
         )
-        
-        # NOTE: A kimenet méretét kényszerítjük a legközelebbi 128x256-ra
-        self.final_upsample = nn.Upsample(
-            size=(self.bev_target_height, self.bev_target_width),
-            mode='bilinear', 
-            align_corners=False
+
+        # 3. Transformer Encoder
+        self.transformer = nn.TransformerEncoder(
+        nn.TransformerEncoderLayer(
+            d_model=384,        # match ViT output
+            nhead=8,            # multi-head attention
+            dim_feedforward=2048,
+            dropout=0.1,
+            batch_first=True
+        ),
+        num_layers=6
+    )
+
+        # 4. Trajectory Prediction Head (Outputs waypoints)
+        self._trajectory_head = TrajectoryHead(
+            num_poses=trajectory_sampling.num_poses,
+            d_ffn=hidden_dim,
+            d_model=vit_output_dim
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor: 
-        x = self.decoder(x)
-        return self.final_upsample(x)
+        # 5. Agent queries and attention for agent prediction
+        self.agent_queries = nn.Parameter(torch.randn(config.num_bounding_boxes, vit_output_dim))
+        nn.init.xavier_uniform_(self.agent_queries)
 
+        # 6. Multihead Attention for Agent Queries (New Initialization)
+        self.agent_attn = nn.MultiheadAttention(
+            embed_dim=vit_output_dim,  # Same as memory.shape[2]
+            num_heads=num_attention_heads, # Use the config arg, or set to 4
+            batch_first=True
+        )
+
+        # 7. Agent Prediction Head (Outputs bounding boxes and labels)
+        self._agent_head = AgentHead(
+            num_agents=config.num_bounding_boxes,
+            d_ffn=config.tf_d_ffn,
+            d_model=config.tf_d_model,
+        )
+
+    def _initialize_concatenation_merge_fusion(self, vit_output_dim, ego_mlp_output_dim, hidden_dim):
+        """
+        Initializes the feature fusion mechanism using concatenation and MLP.
+        """
+        fusion_dim = vit_output_dim + ego_mlp_output_dim  # Dimension after concatenation
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(fusion_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, vit_output_dim),  # Project back to ViT dimension (optional)
+        )
+
+    def _initialize_cross_attention_fusion(self, vit_output_dim, ego_mlp_output_dim, hidden_dim, num_attention_heads):
+        """
+        Initializes the cross-attention mechanism for fusing visual and ego-state features.
+        """
+        self.cross_attention = CrossAttention(
+            query_dim=vit_output_dim,
+            key_dim=ego_mlp_output_dim,
+            num_heads=num_attention_heads
+        )
+        self.fusion_ffn = nn.Sequential(
+            nn.Linear(vit_output_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, vit_output_dim)
+        )
+
+    def _simple_addition_fusion(self, vit_embedding, status_embedding):
+        """
+        Feature fusion mechanism using simple addition.
+        """
+        fused_feature = vit_embedding + status_embedding
+        return fused_feature
+
+    def _concatenate_and_fuse_features(self, vit_embedding, status_embedding):
+        '''
+        Concatenate and fuse visual and ego-state features using MLP.
+        '''
+        fused_feature = torch.cat((vit_embedding, status_embedding), dim=1) # Concatenate along feature dimension (dim=1)
+        fused_feature = self.fusion_mlp(fused_feature)  # (B, 1024)
+
+        return fused_feature
+
+    def _compute_cross_attention_fusion(self, vit_embedding, status_embedding):
+        '''
+        Compute cross-attention between visual and ego-state features.
+        '''
+        # Add a sequence dimension of 1 to embeddings for attention
+        status_embedding_seq = status_embedding.unsqueeze(1) # (B, 1, hidden_dim)
+        vit_embedding_seq = vit_embedding.unsqueeze(1)     # (B, 1, vit_output_dim)
+
+        # Cross-Attention: Visual attends to Ego-State (or vice-versa)
+        attended_visual = self.cross_attention(query=vit_embedding_seq, key=status_embedding_seq, value=status_embedding_seq)
+        fused_feature = vit_embedding + attended_visual.squeeze(1) # Residual connection but no normalization
+        fused_feature = self.fusion_ffn(fused_feature)
+
+        return fused_feature
+
+    def forward_base(self, features):
+        """
+        Standard forward pass for trajectory prediction only.
+
+        :param features: Dictionary containing input tensors:
+            - "front_camera_feature": torch.Tensor, shape (B, C, H, W)
+              Raw front camera image tensor.
+            - "status_feature": torch.Tensor, shape (B, 11)
+              Ego-status features (e.g., velocity, acceleration, command, pose).
+        :return: Dictionary with:
+            - "trajectory": Predicted waypoints, shape (B, num_poses, 3)
+        """
+
+        # 1. Extract camera input and ego-status input
+        camera_input: torch.Tensor = features["front_camera_feature"]
+        status_input: torch.Tensor = features["status_feature"]
+
+        # 2. Preprocess camera input for ViT
+        #    Resize to ViT-compatible resolution (224x224), then convert to PIL
+        resize_transform = T.Resize((224, 224))
+        camera_input_resized = resize_transform(camera_input)
+
+        # 3. Extract ViT embeddings (CLS token per image)
+        vit_embedding = self._extract_vit_embedding(camera_input_resized)
+
+        # 4. Process ego-status input through MLP
+        status_embedding = self.ego_mlp(status_input)  # shape (B, ego_mlp_output_dim)
+
+        # 5. Fuse vision and ego-status features
+        #    Options: simple addition (default), concatenation+MLP, or cross-attention
+        fused_feature = self._simple_addition_fusion(vit_embedding, status_embedding)
+        # fused_feature = self._concatenate_and_fuse_features(vit_embedding, status_embedding)
+        # fused_feature = self._compute_cross_attention_fusion(vit_embedding, status_embedding)
+
+        # 6. Temporal/sequence modeling with Transformer encoder
+        #    Add sequence dim -> (B, 1, d_model), then encode -> squeeze back to (B, d_model)
+        transformed_feature = self.transformer(fused_feature.unsqueeze(1)).squeeze(1)
+
+        # 7. Trajectory prediction head
+        trajectory = self._trajectory_head(transformed_feature)  # (B, num_poses, 3)
+
+        return {"trajectory": trajectory}
+    
+    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+
+        camera_input = features["front_camera_feature"]
+        status_input = features["status_feature"]
+
+        # ViT backbone
+        resize_transform = T.Resize((224, 224))
+        camera_input_resized = resize_transform(camera_input)
+        visual_tokens = self._extract_vit_embedding(camera_input_resized)  # (B, 785, 384)
+
+        # Ego-state embedding
+        status_embedding = self.ego_mlp(status_input)            # (B, 384)
+        ego_token = status_embedding.unsqueeze(1)      # (B, 1, 384)
+
+        # --- Concatenate along sequence dimension ---
+        fused_sequence = torch.cat((visual_tokens, ego_token), dim=1)  # (B, 786, 384)
+
+        # --- Transformer over the full token sequence ---
+        transformed_tokens = self.transformer(fused_sequence)  # (B, 786, 384)
+
+        # --- Use CLS token (index 0) for trajectory prediction ---
+        global_feature = transformed_tokens[:, 0, :]  # (B, 384)
+        output = {"trajectory": self._trajectory_head(global_feature)}
+
+        # Optional agent prediction
+        if self.training and self._aux_tasks_enabled:
+            batch_size = camera_input.shape[0]
+            queries = self.agent_queries.unsqueeze(0).repeat(batch_size, 1, 1)
+            # global_memory = transformed_tokens.unsqueeze(1)
+            attended_queries, _ = self.agent_attn(queries, transformed_tokens, transformed_tokens)
+            output.update(self._agent_head(attended_queries))
+
+        return output
+
+
+    def _extract_vit_embedding(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Extract CLS token and patch embeddings from ViT.
+        Input: image_tensor (B, C, H, W), float [0,1]
+        Output: cls_token (B, d_model), patch_embeddings (B, num_patches, d_model)
+        """
+        # 1. Get model’s device
+        device = next(self.vit.parameters()).device
+
+        # 2. Move image to same device
+        image_tensor = image_tensor.to(device)
+
+        inputs = {"pixel_values": image_tensor}
+        vit_outputs = self.vit(**inputs)
+
+        cls_token = vit_outputs.last_hidden_state[:, 0, :]       # CLS token
+        patch_embeddings = vit_outputs.last_hidden_state[:, 1:, :]  # all other tokens
+        return vit_outputs.last_hidden_state  # (B, 785, 384)
 
 class AgentHead(nn.Module):
     """Bounding box prediction head."""
@@ -105,7 +291,7 @@ class AgentHead(nn.Module):
         agent_labels = self._mlp_label(agent_queries).squeeze(dim=-1)
 
         return {"agent_states": agent_states, "agent_labels": agent_labels}
-    
+
 class TrajectoryHead(nn.Module):
     """Trajectory prediction head."""
 
@@ -134,118 +320,3 @@ class TrajectoryHead(nn.Module):
         poses = self._mlp(object_queries).reshape(-1, self._num_poses, StateSE2Index.size())
         poses[..., StateSE2Index.HEADING] = poses[..., StateSE2Index.HEADING].tanh() * 3.14  # Normalize heading
         return poses  # (B, num_poses, 3)
-
-
-# --- FŐ MODELL ---
-class CameraOnlyModel(nn.Module):
-    def __init__(self, trajectory_sampling: TrajectorySampling, config: CameraOnlyConfig):
-        super().__init__()
-
-        self._query_splits = [
-            1,
-            config.num_bounding_boxes
-        ]  # 1 trajectory + N agents
-        
-        self._config = config
-        self._aux_tasks_enabled = config.aux_tasks_enabled
-        
-        # 1. DINO Vizuális Encoder (4096 dimenzió)
-        self._processor = AutoImageProcessor.from_pretrained(DINO_MODEL_NAME)
-        self._model_vit = AutoModel.from_pretrained(DINO_MODEL_NAME)
-     
-        # 3. Ego Status Encoder (MLP)
-        self._status_encoding = nn.Sequential(
-            nn.Linear(11, 512), 
-            nn.LReLU(),
-            nn.Linear(512, D_MODEL_TARGET), # 1024
-        )  # 11 -> 1024
-
-        # 4. Transzformer Dekóder (BEV Fúzió és Lekérdezés)
-        tf_decoder_layer = nn.TransformerDecoderLayer(
-            d_model=D_MODEL_TARGET, 
-            nhead=config.tf_num_head,
-            dim_feedforward=config.tf_d_ffn,
-            dropout=config.tf_dropout,
-            batch_first=True,
-        )
-        self._transformer_decoder = nn.TransformerDecoder(tf_decoder_layer, config.tf_num_layers)
-
-        # 5. Queries (Trajektória és Agent)
-        self._keyval_embedding = nn.Embedding(14**2 + 1, D_MODEL_TARGET)
-        self._query_embedding = nn.Embedding(sum(self._query_splits), D_MODEL_TARGET)
-
-        # 6. Fejek Inicializálása
-        self._trajectory_head = TrajectoryHead(
-            num_poses=trajectory_sampling.num_poses,
-            d_ffn=config.tf_d_ffn, 
-            d_model=D_MODEL_TARGET
-        )
-        self._agent_head = AgentHead(
-            num_agents=config.num_bounding_boxes,
-            d_ffn=config.tf_d_ffn,
-            d_model=D_MODEL_TARGET
-        )
-        #self._bev_semantic_head = BEVSemanticHead(
-        #    d_model=D_MODEL_TARGET, num_classes=config.num_bev_classes
-        #)
-
-    # --- Segédfüggvény: DINO feature kinyerése ---
-    def _extract_dino_features(self, image_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        
-        device = self._model_vit.device
-        print(device)
-
-        # Nem kell átméretezés, a bemenet 256x256 pixel, amit a _processor is elfogad
-        inputs = self._processor(images=image_tensor, return_tensors="pt")
-        #inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        # Futtatás (GRADIENSEKKEL!)
-        outputs = self._model_vit(**inputs)
-
-        cls_token = outputs.last_hidden_state[:, 0, :] # Batch, 1, 1024       
-        patch_embeddings = outputs.last_hidden_state[:, 5:, :]  # 1 CLS + 4 register token + 256 patch token 
-        return cls_token, patch_embeddings
-
-    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        
-        camera_feature: torch.Tensor = features["front_camera_feature"]
-        status_feature: torch.Tensor = features["status_feature"]
-
-        # 1. DINO Feature Kinyerés és Projekció
-        _, patch_embeddings_1024 = self._extract_dino_features(camera_feature)
-
-        # 2. Ego Kódolás
-        status_encoding_1024 = self._status_encoding(status_feature)
-        global_status_token = status_encoding_1024.unsqueeze(1) 
-
-        # 3. Memória Képzés
-        keyval = torch.cat([patch_embeddings_1024, global_status_token], dim=1)
-        keyval += self._keyval_embedding.weight[None, ...]
-        
-        # 4. Dekóder Futtatása
-        batch_size = camera_feature.shape[0]
-        queries = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
-        query_out = self._transformer_decoder(queries, keyval) 
-        
-        # 5. Fejek (Kimeneti szétválasztás)
-        trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
-        
-        # Trajektória (Trajectory Head a Trajektória Query-re)
-        trajectory = self._trajectory_head(trajectory_query.squeeze(1))
-        output: Dict[str, torch.Tensor] = {"trajectory": trajectory}
-        
-        # Agent és Bev Szemantika (ha engedélyezve)
-        if self._aux_tasks_enabled:
-            # Agent (Detektálás)
-            agents = self._agent_head(agents_query)
-            output.update(agents)
-
-            # BEV Szemantika (Auxiliary Task)
-            ''' N_PATCHES_SPATIAL = 196
-            bev_feature_map = keyval[:, :-1, :]    
-            bev_feature_map_clean = bev_feature_map[:, :N_PATCHES_SPATIAL, :]
-            bev_size = 14        
-            bev_feature_map_2d = bev_feature_map_clean.permute(0, 2, 1).reshape(batch_size, D_MODEL_TARGET, bev_size, bev_size)
-            output["bev_semantic_map"] = self._bev_semantic_head(bev_feature_map_2d) '''
-
-        return output
