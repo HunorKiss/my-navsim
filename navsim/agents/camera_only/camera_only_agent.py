@@ -49,8 +49,8 @@ class CameraOnlyAgent(AbstractAgent):
 
         self._camera_only_model = CameraOnlyModel(self._trajectory_sampling, self._config)
 
-        for param in self._camera_only_model.vit.parameters():
-            param.requires_grad = False  # True = fine-tune, False = freeze
+        #for param in self._camera_only_model.vit.parameters():
+        #    param.requires_grad = False  # True = fine-tune, False = freeze
 
     def name(self) -> str:
         """Inherited, see superclass."""
@@ -128,7 +128,7 @@ class CameraOnlyAgent(AbstractAgent):
         # Cosine annealing scheduler
         scheduler = CosineAnnealingWithDecay(
             optimizer,
-            T_0=30,         # 30 epochs = half-period
+            T_0=35,         # 30 epochs = half-period
             T_mult=2,       # each next cycle doubles in length
             eta_min=1e-5,   # minimum LR
             decay_factor=0.5  # restart amplitude halves each time

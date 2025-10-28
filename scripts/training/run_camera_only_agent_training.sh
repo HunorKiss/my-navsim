@@ -6,11 +6,12 @@ export NUPLAN_MAPS_ROOT=~/thesis/dataset/maps
 export PYTHONPATH=$NAVSIM_DEVKIT_ROOT:$PYTHONPATH
 
 export CUDA_VISIBLE_DEVICES=0
+export HYDRA_FULL_ERROR=1
 
 TRAIN_TEST_SPLIT=navtrain
 
 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_training.py \
 agent=camera_only_agent \
-experiment_name=training_final_solution_v1 \
+experiment_name=training_vision_only_transfuser_v1 \
 trainer.params.max_epochs=50 \
 train_test_split=$TRAIN_TEST_SPLIT
